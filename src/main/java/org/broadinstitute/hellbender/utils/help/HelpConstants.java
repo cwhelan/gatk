@@ -55,6 +55,9 @@ public final class HelpConstants {
     public final static String DOC_CAT_RNA = "RNA-Specific Tools";
     public final static String DOC_CAT_RNA_SUMMARY = "Tools intended to be used for processing RNA data.";
 
+    public final static String DOC_CAT_LINKED_READ = "Linked Read Tools";
+    public final static String DOC_CAT_LINKED_READ_SUMMARY = "Tools to analyze linked-read data.";
+
     // End GATK Program groups
 
     /**
