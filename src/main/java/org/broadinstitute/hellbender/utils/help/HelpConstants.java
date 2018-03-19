@@ -56,6 +56,9 @@ public final class HelpConstants {
     public final static String DOC_CAT_METHYLATION_DISCOVERY = "Methylation-Specific Tools";
     public final static String DOC_CAT_METHYLATION_DISCOVERY_SUMMARY = "Tools that perform methylation calling, processing bisulfite sequenced, methylation-aware aligned BAM";
 
+    public final static String DOC_CAT_LINKED_READ = "Linked Read Tools";
+    public final static String DOC_CAT_LINKED_READ_SUMMARY = "Tools to analyze linked-read data.";
+
     // End GATK Program groups
 
     /**
