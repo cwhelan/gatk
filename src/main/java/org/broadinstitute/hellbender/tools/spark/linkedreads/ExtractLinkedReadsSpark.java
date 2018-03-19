@@ -54,43 +54,43 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     public String out;
 
     @Argument(doc = "cluster size",
-            shortName = "clusterSize", fullName = "clusterSize",
+            shortName = "cluster-size", fullName = "cluster-size",
             optional = true)
     public int clusterSize = 25000;
 
     @Argument(doc = "molSizeHistogramFile",
-            shortName = "molSizeHistogramFile", fullName = "molSizeHistogramFile",
+            shortName = "mol-size-histogram", fullName = "molecule-size-histogram-file",
             optional = true)
     public String molSizeHistogramFile;
 
     @Argument(doc = "gapHistogramFile",
-            shortName = "gapHistogramFile", fullName = "gapHistogramFile",
+            shortName = "gap-histogram-file", fullName = "gap-histogram-file",
             optional = true)
     public String gapHistogramFile;
 
     @Argument(doc = "metadataFile",
-            shortName = "metadataFile", fullName = "metadataFile",
+            shortName = "metadata-file", fullName = "metadata-file",
             optional = true)
     public String metadataFile;
 
     @Argument(doc = "barcodeFragmentCountsFile",
-            shortName = "barcodeFragmentCountsFile", fullName = "barcodeFragmentCountsFile",
+            shortName = "barcode-fragment-counts-file", fullName = "barcode-fragment-counts-file",
             optional = true)
     public String barcodeFragmentCountsFile;
 
 
-    @Argument(doc = "phaseSetIntervalsFile",
-            shortName = "phaseSetIntervalsFile", fullName = "phaseSetIntervalsFile",
+    @Argument(doc = "phase-set-intervals-file",
+            shortName = "phase-set-intervals-file", fullName = "phase-set-intervals-file",
             optional = true)
     public String phaseSetIntervalsFile;
 
-    @Argument(fullName = "minReadCountPerMol", shortName = "minReadCountPerMol", doc="Minimum number of reads to call a molecule", optional=true)
+    @Argument(fullName = "min-read-count-per-molecule", shortName = "min-read-count-per-molecule", doc="Minimum number of reads to call a molecule", optional=true)
     public int minReadCountPerMol = 2;
 
-    @Argument(fullName = "edgeReadMapqThreshold", shortName = "edgeReadMapqThreshold", doc="Mapq below which to trim reads from starts and ends of molecules", optional=true)
+    @Argument(fullName = "edge-read-mapq-threshold", shortName = "edge-read-mapq-threshold", doc="Mapq below which to trim reads from starts and ends of molecules", optional=true)
     public int edgeReadMapqThreshold = 30;
 
-    @Argument(fullName = "minMaxMapq", shortName = "minMaxMapq", doc="Minimum highest mapq read to create a fragment", optional=true)
+    @Argument(fullName = "min-max-mapq", shortName = "min-max-mapq", doc="Minimum highest mapq read to create a fragment", optional=true)
     public int minMaxMapq = 30;
 
 
