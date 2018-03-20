@@ -16,7 +16,6 @@ import org.broadinstitute.barclay.argparser.Argument;
 import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.LinkedReadsProgramGroup;
-import org.broadinstitute.hellbender.engine.datasources.ReferenceMultiSource;
 import org.broadinstitute.hellbender.engine.filters.ReadFilter;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
 import org.broadinstitute.hellbender.exceptions.GATKException;
@@ -116,23 +115,16 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                 reads.filter(read ->
                         !read.isDuplicate() && !read.failsVendorQualityCheck() && !read.isUnmapped() && ! read.isSecondaryAlignment() && ! read.isSupplementaryAlignment());
 
-        logger.warn("Computing read metadata");
-        final ReadMetadata readMetadata = new ReadMetadata(Collections.emptySet(), getHeaderForReads(), 2000,
-                mappedReads, new SVReadFilter(new StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection()),
-                LogManager.getLogger(ExtractLinkedReadsSpark.class));
-
-        if (metadataFile != null) {
-            ReadMetadata.writeMetadata(readMetadata, metadataFile);
-        }
-
+        final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getHeaderForReads().getSequenceDictionary());
+        final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
         logger.warn("Got read metadata");
 
         logger.warn("Loading linked reads");
-        final Broadcast<ReadMetadata> broadcastMetadata = ctx.broadcast(readMetadata);
-        final ReferenceMultiSource reference = getReference();
+        final Broadcast<Map<String, Integer>> broadcastContigNameMap = ctx.broadcast(contigNameToIdMap);
+        final Broadcast<String[]> broadcastContigNames =  ctx.broadcast(contigNames);
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals
-            = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastMetadata, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold)
+            = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastContigNameMap, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold)
                 .repartition(ctx.defaultParallelism()).cache();
         logger.warn("Done loading linked reads");
 
@@ -140,19 +132,20 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
             computeFragmentCounts(barcodeIntervals, barcodeFragmentCountsFile);
         }
 
-        final Tuple2<double[], long[]> molSizeHistogram = molSizeHistogramFile != null ? computeMolSizeHistogram(barcodeIntervals, molSizeHistogramFile) : null;
+        if (molSizeHistogramFile != null) {
+            computeMolSizeHistogram(barcodeIntervals, molSizeHistogramFile);
+        }
 
         if (gapHistogramFile != null) {
             computeGapSizeHistogram(barcodeIntervals, gapHistogramFile);
         }
 
         if (out != null) {
-            writeIntervalsAsBed12(broadcastMetadata, barcodeIntervals, shardedOutput, out);
+            writeIntervalsAsBed12(broadcastContigNames, barcodeIntervals, shardedOutput, out);
         }
 
         if (phaseSetIntervalsFile != null) {
             final JavaRDD<String> phaseSetIntervals = mappedReads.mapPartitions(iter -> {
-                final ReadMetadata metadata = broadcastMetadata.getValue();
                 List<Tuple2<Integer, SVInterval>> partitionPhaseSets = new ArrayList<>();
                 int currentPS = -1;
                 int currentContig = -1;
@@ -167,7 +160,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                                 partitionPhaseSets.add(new Tuple2<>(currentPS, new SVInterval(currentContig, currentStart, currentEnd)));
                             }
                             currentPS = ps;
-                            currentContig = metadata.getContigID(read.getContig());
+                            currentContig = broadcastContigNameMap.getValue().get(read.getContig());
                             currentStart = read.getStart();
                             currentEnd = read.getEnd();
                         } else {
@@ -183,7 +176,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                     .map(kv -> {
                         final SVInterval svInterval = kv._1();
                         final Integer ps = kv._2();
-                        final String contigName = lookupContigName(svInterval.getContig(), broadcastMetadata.getValue());
+                        final String contigName = broadcastContigNames.getValue()[svInterval.getContig()];
                         return contigName + "\t" + svInterval.getStart() + "\t" + svInterval.getEnd() + "\t" + ps;
                     });
 
@@ -200,7 +193,10 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     }
 
 
-    private static void writeIntervalsAsBed12(final Broadcast<ReadMetadata> broadcastMetadata, final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals, final boolean shardedOutput, final String out) {
+    private static void writeIntervalsAsBed12(final Broadcast<String[]> contigNames,
+                                              final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals,
+                                              final boolean shardedOutput,
+                                              final String out) {
         final JavaPairRDD<SVInterval, String> bedRecordsByBarcode;
         bedRecordsByBarcode = barcodeIntervals.flatMapToPair(x -> {
             final String barcode = x._1;
@@ -208,7 +204,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
 
             final List<Tuple2<SVInterval, String>> results = new ArrayList<>();
             for (final SVIntervalTree.Entry<List<ReadInfo>> next : svIntervalTree) {
-                results.add(new Tuple2<>(next.getInterval(), intervalTreeToBedRecord(barcode, next, broadcastMetadata.getValue())));
+                results.add(new Tuple2<>(next.getInterval(), intervalTreeToBedRecord(barcode, next, contigNames.getValue())));
             }
 
             return results.iterator();
@@ -310,8 +306,13 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         barcodeReadCounts.saveAsTextFile(barcodeFragmentCountsFile);
     }
 
-    private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> getBarcodeIntervals(final int finalClusterSize, final JavaRDD<GATKRead> mappedReads, final Broadcast<ReadMetadata> broadcastMetadata, final int minReadCountPerMol, final int minMaxMapq, final int edgeReadMapqThreshold) {
-        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC = getClusteredReadIntervalsByTag(finalClusterSize, mappedReads, broadcastMetadata, "BX");
+    private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> getBarcodeIntervals(final int finalClusterSize,
+                                                                                           final JavaRDD<GATKRead> mappedReads,
+                                                                                           final Broadcast<Map<String, Integer>> broadcastContigNameMap,
+                                                                                           final int minReadCountPerMol,
+                                                                                           final int minMaxMapq,
+                                                                                           final int edgeReadMapqThreshold) {
+        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC = getClusteredReadIntervalsByTag(finalClusterSize, mappedReads, broadcastContigNameMap, "BX");
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlappersRemovedClusteredReads = overlapperFilter(readsClusteredByBC, finalClusterSize);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> edgefilteredClusteredReads = edgeFilterFragments(overlappersRemovedClusteredReads, edgeReadMapqThreshold);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFragments = minMoleculeCountFilterFragments(edgefilteredClusteredReads, minReadCountPerMol);
@@ -460,10 +461,13 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
 
     }
 
-    private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> getClusteredReadIntervalsByTag(final int finalClusterSize, final JavaRDD<GATKRead> mappedReads, final Broadcast<ReadMetadata> broadcastMetadata, final String tag) {
+    private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> getClusteredReadIntervalsByTag(final int finalClusterSize,
+                                                                                                      final JavaRDD<GATKRead> mappedReads,
+                                                                                                      final Broadcast<Map<String, Integer>> broadcastContigNameMap,
+                                                                                                      final String tag) {
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> intervalsByKey = mappedReads.filter(GATKRead::isFirstOfPair)
-                .mapToPair(read -> new Tuple2<>(read.getAttributeAsString(tag), new ReadInfo(broadcastMetadata.getValue(), read)))
+                .mapToPair(read -> new Tuple2<>(read.getAttributeAsString(tag), new ReadInfo(broadcastContigNameMap.getValue(), read)))
                 .combineByKey(
                         readInfo -> {
                             SVIntervalTree<List<ReadInfo>> intervalTree = new SVIntervalTree<>();
@@ -600,9 +604,9 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         return currentEnd + clusterSize > newInterval.getStart() - clusterSize;
     }
 
-    static String intervalTreeToBedRecord(final String barcode, final SVIntervalTree.Entry<List<ReadInfo>> node, final ReadMetadata readMetadata) {
+    static String intervalTreeToBedRecord(final String barcode, final SVIntervalTree.Entry<List<ReadInfo>> node, final String[] contigNames) {
         final StringBuilder builder = new StringBuilder();
-        builder.append(lookupContigName(node.getInterval().getContig(), readMetadata));
+        builder.append(contigNames[node.getInterval().getContig()]);
         builder.append("\t");
         builder.append(node.getInterval().getStart());
         builder.append("\t");
@@ -637,17 +641,14 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         return builder.toString();
     }
 
-    private static String lookupContigName(final int contig, final ReadMetadata readMetadata) {
-        return readMetadata.getContigName(contig);
-    }
 
     /**
      * A lightweight object to summarize reads for the purposes of collecting linked read information
      */
     @DefaultSerializer(ReadInfo.Serializer.class)
     static class ReadInfo {
-        ReadInfo(final ReadMetadata readMetadata, final GATKRead gatkRead) {
-            this.contig = readMetadata.getContigID(gatkRead.getContig());
+        ReadInfo(final Map<String, Integer> contigNameMap, final GATKRead gatkRead) {
+            this.contig = contigNameMap.get(gatkRead.getContig());
             this.start = gatkRead.getStart();
             this.end = gatkRead.getEnd();
             this.forward = !gatkRead.isReverseStrand();
