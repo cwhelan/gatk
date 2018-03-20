@@ -124,8 +124,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals
             = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastContigNameMap, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold)
-                .cache();
-        logger.info("Detected " + barcodeIntervals.count() + " barcode intervals.");
+                .repartition(ctx.defaultParallelism()).cache();
 
         if (barcodeFragmentCountsFile != null) {
             computeFragmentCounts(barcodeIntervals, barcodeFragmentCountsFile);
