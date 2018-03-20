@@ -117,16 +117,15 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
 
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getHeaderForReads().getSequenceDictionary());
         final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
-        logger.warn("Got read metadata");
 
-        logger.warn("Loading linked reads");
+        logger.info("Loading linked reads");
         final Broadcast<Map<String, Integer>> broadcastContigNameMap = ctx.broadcast(contigNameToIdMap);
         final Broadcast<String[]> broadcastContigNames =  ctx.broadcast(contigNames);
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals
             = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastContigNameMap, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold)
-                .repartition(ctx.defaultParallelism()).cache();
-        logger.warn("Done loading linked reads");
+                .cache();
+        logger.info("Detected " + barcodeIntervals.count() + " barcode intervals.");
 
         if (barcodeFragmentCountsFile != null) {
             computeFragmentCounts(barcodeIntervals, barcodeFragmentCountsFile);
