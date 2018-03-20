@@ -47,6 +47,7 @@ public class ReadMetadata {
     private static final String NO_GROUP = "NoGroup";
     private static final float MIN_COVERAGE = 10.f;
     private static final float DEFAULT_MEAN_BASE_QUALITY_FOR_TESTING = 30.f;
+    private String[] contigNames;
 
     public ReadMetadata( final Set<Integer> crossContigIgnoreSet,
                          final SAMFileHeader header,
@@ -388,6 +389,10 @@ public class ReadMetadata {
         } catch ( final IOException ioe ) {
             throw new GATKException("Can't write metadata file.", ioe);
         }
+    }
+
+    public String[] getContigNames() {
+        return contigNames;
     }
 
     public static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadMetadata> {
