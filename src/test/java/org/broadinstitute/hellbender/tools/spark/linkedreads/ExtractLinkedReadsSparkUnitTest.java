@@ -5,7 +5,6 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import htsjdk.samtools.SAMFileHeader;
 import org.broadinstitute.hellbender.tools.spark.linkedreads.ExtractLinkedReadsSpark.ReadInfo;
-import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVInterval;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVIntervalTree;
 import org.broadinstitute.hellbender.utils.read.ArtificialReadUtils;
@@ -22,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class ExtractLinkedReadsSparkUnitTest {
 
@@ -142,7 +140,21 @@ public class ExtractLinkedReadsSparkUnitTest {
         final String barcode = "ACTGACTG";
 
         final String bedRecord = ExtractLinkedReadsSpark.intervalTreeToBedRecord(barcode, tree.iterator().next(), contigNames);
-        Assert.assertEquals(bedRecord, "1\t1000\t1160\tACTGACTG\t5\t+\t1000\t1160\t0,0,255\t5\t10,11,10,9,10\t0,20,25,45,150\t0");
+        Assert.assertEquals(bedRecord, "1\t1000\t1159\tACTGACTG\t5\t+\t1000\t1159\t0,0,255\t5\t10,11,10,9,10\t0,20,25,45,150\t60");
+
+    }
+
+    @Test
+    public void testEdgeTrimTree() {
+        final SAMFileHeader artificialSamHeader = ArtificialReadUtils.createArtificialSamHeader(1, 1, 10000);
+
+        final SVIntervalTree<List<ReadInfo>> tree = createTestSVIntervalTree1(artificialSamHeader);
+        tree.findByIndex(0).getValue().get(0).mapq = 20;
+
+        SVIntervalTree<List<ReadInfo>> trimmedTree = ExtractLinkedReadsSpark.edgeTrimTree(30, tree);
+        Assert.assertEquals(trimmedTree.size(), 1);
+        Assert.assertEquals(trimmedTree.findByIndex(0).getValue().size(), 4);
+        Assert.assertEquals(trimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1020, tree.findByIndex(0).getInterval().getEnd()));
 
     }
 
@@ -154,7 +166,8 @@ public class ExtractLinkedReadsSparkUnitTest {
         resultList1.add(new ReadInfo(contigIdToContigNameMap, ArtificialReadUtils.createArtificialRead(artificialSamHeader, "1", 0, 1025, "AGAGAGAGAG".getBytes(), "4444444444".getBytes(), "10M")));
         resultList1.add(new ReadInfo(contigIdToContigNameMap, ArtificialReadUtils.createArtificialRead(artificialSamHeader, "1", 0, 1045, "GCGCGCGCGC".getBytes(), "5555555555".getBytes(), "5M1I4M")));
         resultList1.add(new ReadInfo(contigIdToContigNameMap, ArtificialReadUtils.createArtificialRead(artificialSamHeader, "1", 0, 1150, "TTTTTTTTTT".getBytes(), "6666666666".getBytes(), "10M")));
-        tree.put(new SVInterval(contigIdToContigNameMap.get("1"), 1000, 1160), resultList1);
+        resultList1.forEach(r -> r.mapq = 60);
+        tree.put(new SVInterval(contigIdToContigNameMap.get("1"), resultList1.get(0).start, resultList1.get(4).end), resultList1);
         return tree;
     }
 
@@ -173,7 +186,7 @@ public class ExtractLinkedReadsSparkUnitTest {
         @SuppressWarnings("unchecked")
         final SVIntervalTree<List<ReadInfo>> tree2 = (SVIntervalTree<List<ReadInfo>>)kryo.readClassAndObject(in);
         Assert.assertEquals(tree.size(), tree2.size());
-        final SVIntervalTree.Entry<List<ReadInfo>> listEntry = tree2.find(new SVInterval(contigIdToContigNameMap.get("1"), 1000, 1160));
+        final SVIntervalTree.Entry<List<ReadInfo>> listEntry = tree2.find(new SVInterval(contigIdToContigNameMap.get("1"), 1000, 1159));
         Assert.assertTrue(listEntry != null);
         Assert.assertEquals(listEntry.getValue().size(), 5);
     }
