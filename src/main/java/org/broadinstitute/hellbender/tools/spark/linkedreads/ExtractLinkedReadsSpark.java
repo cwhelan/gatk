@@ -6,7 +6,6 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.google.common.annotations.VisibleForTesting;
 import htsjdk.samtools.util.BlockCompressedOutputStream;
-import org.apache.logging.log4j.LogManager;
 import org.apache.spark.api.java.JavaDoubleRDD;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
@@ -19,9 +18,7 @@ import org.broadinstitute.hellbender.cmdline.programgroups.LinkedReadsProgramGro
 import org.broadinstitute.hellbender.engine.filters.ReadFilter;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
 import org.broadinstitute.hellbender.exceptions.GATKException;
-import org.broadinstitute.hellbender.tools.spark.sv.StructuralVariationDiscoveryArgumentCollection;
 import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
-import org.broadinstitute.hellbender.tools.spark.sv.evidence.SVReadFilter;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVInterval;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVIntervalTree;
 import org.broadinstitute.hellbender.utils.Utils;
@@ -420,33 +417,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> edgeFilterFragments(final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC, final int edgeReadMapqThreshold) {
         if (edgeReadMapqThreshold > 0) {
             return readsClusteredByBC.flatMapToPair(kv -> {
-                final SVIntervalTree<List<ReadInfo>> myTree = kv._2();
-                final Iterator<SVIntervalTree.Entry<List<ReadInfo>>> treeIterator = myTree.iterator();
-                while (treeIterator.hasNext()) {
-                    SVIntervalTree.Entry<List<ReadInfo>> entry =  treeIterator.next();
-                    final List<ReadInfo> value = entry.getValue();
-                    final Iterator<ReadInfo> iterator = value.iterator();
-                    while (iterator.hasNext()) {
-                        final ReadInfo readInfo = iterator.next();
-                        if (readInfo.getMapq() > edgeReadMapqThreshold) {
-                            break;
-                        } else {
-                            iterator.remove();
-                        }
-                    }
-                    final ListIterator<ReadInfo> revIterator = value.listIterator(value.size());
-                    while (revIterator.hasPrevious()) {
-                        final ReadInfo readInfo = revIterator.previous();
-                        if (readInfo.getMapq() > edgeReadMapqThreshold) {
-                            break;
-                        } else {
-                            revIterator.remove();
-                        }
-                    }
-                    if (entry.getValue().isEmpty()) {
-                        treeIterator.remove();
-                    }
-                }
+                final SVIntervalTree<List<ReadInfo>> myTree = edgeTrimTree(edgeReadMapqThreshold, kv._2());
                 if (myTree.size() == 0) {
                     return Collections.emptyIterator();
                 } else {
@@ -457,6 +428,47 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
             return readsClusteredByBC;
         }
 
+    }
+
+    static SVIntervalTree<List<ReadInfo>> edgeTrimTree(final int edgeReadMapqThreshold, final SVIntervalTree<List<ReadInfo>> myTree) {
+        final Iterator<SVIntervalTree.Entry<List<ReadInfo>>> treeIterator = myTree.iterator();
+        final List<List<ReadInfo>> modifiedValues = new ArrayList<>(myTree.size());
+        while (treeIterator.hasNext()) {
+            SVIntervalTree.Entry<List<ReadInfo>> entry =  treeIterator.next();
+            boolean trimmed = false;
+            final List<ReadInfo> value = entry.getValue();
+            final Iterator<ReadInfo> iterator = value.iterator();
+            while (iterator.hasNext()) {
+                final ReadInfo readInfo = iterator.next();
+                if (readInfo.getMapq() > edgeReadMapqThreshold) {
+                    break;
+                } else {
+                    iterator.remove();
+                    trimmed = true;
+                }
+            }
+            final ListIterator<ReadInfo> revIterator = value.listIterator(value.size());
+            while (revIterator.hasPrevious()) {
+                final ReadInfo readInfo = revIterator.previous();
+                if (readInfo.getMapq() > edgeReadMapqThreshold) {
+                    break;
+                } else {
+                    revIterator.remove();
+                    trimmed = true;
+                }
+            }
+            if (trimmed) {
+                treeIterator.remove();
+            }
+            if (!entry.getValue().isEmpty()) {
+                modifiedValues.add(entry.getValue());
+            }
+        }
+        modifiedValues.forEach(l -> {
+            final SVInterval interval = new SVInterval(l.get(0).contig, l.get(0).start, l.get(l.size() - 1).end);
+            myTree.put(interval, l);
+        });
+        return myTree;
     }
 
     private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> getClusteredReadIntervalsByTag(final int finalClusterSize,
