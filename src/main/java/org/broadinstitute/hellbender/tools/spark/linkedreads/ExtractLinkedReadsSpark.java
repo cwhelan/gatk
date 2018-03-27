@@ -96,9 +96,23 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     @Argument(fullName = "filter-high-depth", shortName = "filter-high-depth", doc="Filter out high-depth regions as defined by high-depth-coverage-peak-factor and high-depth-coverage-factor", optional=true)
     public boolean filterHighDepth = false;
 
-    @ArgumentCollection
-    private final StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection params =
-            new StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection();
+    @Argument(doc = "Largest fragment size that will be explicitly counted in determining " +
+            "fragment size statistics.", fullName = "max-tracked-fragment-length")
+    public int maxTrackedFragmentLength = 2000;
+
+    @Argument(doc = "We filter out contiguous regions of the genome that have coverage of at least high-depth-coverage-factor * avg-coverage and a " +
+            "peak coverage of high-depth-coverage-peak-factor * avg-coverage, because the reads mapped to those regions tend to be non-local and high depth prevents accurate assembly.",
+            fullName = "high-depth-coverage-factor")
+    public int highDepthCoverageFactor = 4;
+
+    @Argument(doc = "We filter out contiguous regions of the genome that have coverage of at least high-depth-coverage-factor * avg-coverage and a " +
+            "peak coverage of high-depth-coverage-peak-factor * avg-coverage, because the reads mapped to those regions tend to be non-local and high depth prevents accurate assembly.",
+            fullName = "high-depth-coverage-peak-factor")
+    public int highDepthCoveragePeakFactor = 10;
+
+
+    @Argument(doc = "file for high-coverage intervals output", fullName = "high-coverage-intervals", optional = true)
+    public String highCoverageIntervalsFile;
 
     @Override
     public boolean requiresReads() { return true; }
@@ -125,12 +139,18 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getHeaderForReads().getSequenceDictionary());
         final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
 
+        final StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection params =
+                new StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection();
+        params.highDepthCoverageFactor = highDepthCoverageFactor;
+        params.highDepthCoveragePeakFactor = highDepthCoveragePeakFactor;
+        params.highCoverageIntervalsFile = highCoverageIntervalsFile;
+
         final SVIntervalTree<SVInterval> highCoverageSubintervalTree;
         if (filterHighDepth) {
             final SVReadFilter filter = new SVReadFilter(params);
 
             final ReadMetadata readMetadata =
-                    new ReadMetadata(Collections.emptySet(), getHeaderForReads(), params.maxTrackedFragmentLength, getUnfilteredReads(), filter, logger);
+                    new ReadMetadata(Collections.emptySet(), getHeaderForReads(), maxTrackedFragmentLength, getUnfilteredReads(), filter, logger);
             final Broadcast<ReadMetadata> broadcastMetadata = ctx.broadcast(readMetadata);
 
             highCoverageSubintervalTree = FindBreakpointEvidenceSpark.findGenomewideHighCoverageIntervalsToIgnore(params, readMetadata, ctx,
