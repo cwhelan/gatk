@@ -156,6 +156,14 @@ public class ExtractLinkedReadsSparkUnitTest {
         Assert.assertEquals(trimmedTree.findByIndex(0).getValue().size(), 4);
         Assert.assertEquals(trimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1020, tree.findByIndex(0).getInterval().getEnd()));
 
+        final SVIntervalTree<List<ReadInfo>> tree2 = createTestSVIntervalTree1(artificialSamHeader);
+        tree2.findByIndex(0).getValue().get(4).mapq = 20;
+
+        SVIntervalTree<List<ReadInfo>> endTrimmedTree = ExtractLinkedReadsSpark.edgeTrimTree(30, tree2);
+        Assert.assertEquals(endTrimmedTree.size(), 1);
+        Assert.assertEquals(endTrimmedTree.findByIndex(0).getValue().size(), 4);
+        Assert.assertEquals(endTrimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1000, 1053));
+
     }
 
     private SVIntervalTree<List<ReadInfo>> createTestSVIntervalTree1(final SAMFileHeader artificialSamHeader) {

@@ -270,12 +270,16 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         for (int i = 0; i < numParts; i++) {
             String fileName = String.format("part-%1$05d", i);
             try {
-                final BufferedInputStream bufferedInputStream = new BufferedInputStream(Files.newInputStream(NIOFileUtil.asPath(shardedOutputDirectory + System.getProperty("file.separator") + fileName)));
-                int bite;
-                while ((bite = bufferedInputStream.read()) != -1) {
-                    outputStream.write(bite);
+                Path path = NIOFileUtil.asPath(shardedOutputDirectory + System.getProperty("file.separator") + fileName);
+                if (Files.exists(path)) {
+                    final BufferedInputStream bufferedInputStream = new BufferedInputStream(Files.newInputStream(path));
+                    int bite;
+                    while ((bite = bufferedInputStream.read()) != -1) {
+                        outputStream.write(bite);
+                    }
+                    bufferedInputStream.close();
                 }
-                bufferedInputStream.close();
+            
             } catch (IOException e) {
                 throw new GATKException(e.getMessage());
             }
