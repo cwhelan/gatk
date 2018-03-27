@@ -151,10 +151,10 @@ public class ExtractLinkedReadsSparkUnitTest {
         final SVIntervalTree<List<ReadInfo>> tree = createTestSVIntervalTree1(artificialSamHeader);
         tree.findByIndex(0).getValue().get(0).mapq = 20;
 
-        SVIntervalTree<List<ReadInfo>> trimmedTree = ExtractLinkedReadsSpark.edgeTrimTree(30, tree);
-        Assert.assertEquals(trimmedTree.size(), 1);
-        Assert.assertEquals(trimmedTree.findByIndex(0).getValue().size(), 4);
-        Assert.assertEquals(trimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1020, tree.findByIndex(0).getInterval().getEnd()));
+        SVIntervalTree<List<ReadInfo>> startTrimmedTree = ExtractLinkedReadsSpark.edgeTrimTree(30, tree);
+        Assert.assertEquals(startTrimmedTree.size(), 1);
+        Assert.assertEquals(startTrimmedTree.findByIndex(0).getValue().size(), 4);
+        Assert.assertEquals(startTrimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1020, tree.findByIndex(0).getInterval().getEnd()));
 
         final SVIntervalTree<List<ReadInfo>> tree2 = createTestSVIntervalTree1(artificialSamHeader);
         tree2.findByIndex(0).getValue().get(4).mapq = 20;
@@ -163,6 +163,13 @@ public class ExtractLinkedReadsSparkUnitTest {
         Assert.assertEquals(endTrimmedTree.size(), 1);
         Assert.assertEquals(endTrimmedTree.findByIndex(0).getValue().size(), 4);
         Assert.assertEquals(endTrimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1000, 1053));
+
+        final SVIntervalTree<List<ReadInfo>> tree3 = createTestSVIntervalTree1(artificialSamHeader);
+
+        SVIntervalTree<List<ReadInfo>> unTrimmedTree = ExtractLinkedReadsSpark.edgeTrimTree(30, tree3);
+        Assert.assertEquals(unTrimmedTree.size(), 1);
+        Assert.assertEquals(unTrimmedTree.findByIndex(0).getValue().size(), 5);
+        Assert.assertEquals(unTrimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1000, 1159));
 
     }
 

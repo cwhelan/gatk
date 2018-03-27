@@ -279,7 +279,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                     }
                     bufferedInputStream.close();
                 }
-            
+
             } catch (IOException e) {
                 throw new GATKException(e.getMessage());
             }
@@ -510,9 +510,9 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
             }
             if (trimmed) {
                 treeIterator.remove();
-            }
-            if (!entry.getValue().isEmpty()) {
-                modifiedValues.add(entry.getValue());
+                if (!entry.getValue().isEmpty()) {
+                    modifiedValues.add(entry.getValue());
+                }
             }
         }
         modifiedValues.forEach(l -> {
