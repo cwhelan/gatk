@@ -60,29 +60,10 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final Broadcast<String[]> broadcastContigNames = ctx.broadcast(contigNames);
 
         final JavaPairRDD<String, Tuple2<SVInterval, List<ReadInfo>>> barcodeIntervalsWithReads;
-        barcodeIntervalsWithReads = parseBarcodeIntervals(ctx, broadcastContigNameMap, inputLinkedReads);
+        barcodeIntervalsWithReads = parseBarcodeIntervals(ctx, broadcastContigNameMap, inputLinkedReads).cache();
         logger.info("Done loading linked reads");
 
-        final List<IntHistogram> partitionHistograms = barcodeIntervalsWithReads.mapPartitions(iter -> {
-            IntHistogram intHistogram = new IntHistogram(MAX_TRACKED_VALUE);
-            while (iter.hasNext()) {
-                final Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>> next = iter.next();
-                final List<ReadInfo> readInfos = next._2()._2();
-                for (int i = 1; i < readInfos.size(); i++) {
-                    final int gap = readInfos.get(i).getStart() - readInfos.get(i - 1).getStart();
-                    intHistogram.addObservation(gap);
-                }
-            }
-            return SVUtils.singletonIterator(intHistogram);
-        }).collect();
-
-
-        final IntHistogram fullIntHistogram = partitionHistograms.stream().reduce(
-                new IntHistogram(MAX_TRACKED_VALUE),
-                (h1, h2) -> {
-                    h1.addObservations(h2);
-                    return h1;
-                });
+        final IntHistogram fullIntHistogram = getGapSizeHistogram(barcodeIntervalsWithReads);
 
         final int median = fullIntHistogram.getCDF().median();
         logger.info("Median gap size: " + median);
@@ -96,43 +77,8 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         JavaPairRDD<String, Tuple2<SVInterval, Long>> barcodesWithoutReadsWithIds =
                 barcodeIntervalsWithoutReads.zipWithUniqueId().mapToPair(pair -> new Tuple2<>(pair._1._1, new Tuple2<>(pair._1._2(), pair._2))).cache();
 
-        final JavaPairRDD<String, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeTrees = barcodesWithoutReadsWithIds.aggregateByKey(
-                null,
-                (tree, pair) -> {
-                    final SVInterval interval = pair._1;
-                    final Long id = pair._2;
-                    if (tree == null) {
-                        tree = new SVIntervalTree<Tuple2<Boolean, Long>>();
-                    }
-                    final SVInterval leftInterval = new SVInterval(
-                            interval.getContig(),
-                            Math.max(0, interval.getStart() - median),
-                            interval.getStart());
-                    tree.put(leftInterval, new Tuple2<>(false, id));
-                    final SVInterval rightInterval = new SVInterval(
-                            interval.getContig(),
-                            interval.getEnd(),
-                            interval.getEnd() + median);
-                    tree.put(rightInterval, new Tuple2<>(true, id));
-
-                    return tree;
-                },
-                (tree1, tree2) -> {
-
-                    if (tree1 == null) {
-                        tree1 = new SVIntervalTree<>();
-                    }
-                    if (tree2 == null) {
-                        tree2 = new SVIntervalTree<>();
-                    }
-                    final SVIntervalTree<Tuple2<Boolean, Long>> combinedTree = new SVIntervalTree<>();
-                    tree1.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
-                    tree2.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
-                    return combinedTree;
-                }
-        );
-
-        final Map<String, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeEndTrees = barcodeTrees.collectAsMap();
+        final Map<String, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeEndTrees = getIntervalEndsTrees(median, barcodesWithoutReadsWithIds);
+        logger.info("Collected barcode ends for " + barcodeEndTrees.size() + " barcodes.");
         final Broadcast<Map<String, SVIntervalTree<Tuple2<Boolean, Long>>>> broadcastIntervalEnds = ctx.broadcast(barcodeEndTrees);
 
         final JavaRDD<Tuple2<PairedStrandedIntervals, Set<String>>> linksWithEnoughOverlappers = barcodesWithoutReadsWithIds.mapPartitions((iter) -> {
@@ -143,9 +89,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         final Tuple2<String, Tuple2<SVInterval, Long>> next = iter.next();
                         final String barcode = next._1();
                         final Long moleculeId = next._2._2;
-                        if (barcode.equals("GGCCGATAGGTTCATC-1")) {
-                            System.err.println("found it");
-                        }
                         final SVInterval moleculeInterval = next._2()._1;
                         final SVInterval leftInterval = new SVInterval(
                                 moleculeInterval.getContig(),
@@ -160,9 +103,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         while (overlapScanIterator.hasNext()) {
                             final Tuple2<PairedStrandedIntervals, String> link = overlapScanIterator.next();
                             final String linkBarcode = link._2();
-                            if (linkBarcode.equals("GGCCGATAGGTTCATC-1")) {
-                                System.err.println("cleaning it up");
-                            }
 
                             if (!link._1().getLeft().getInterval().isDisjointFrom(leftInterval)) {
                                 break;
@@ -234,6 +174,69 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         );
 
         linksWithEnoughOverlappers.saveAsTextFile("bar");
+    }
+
+    private Map<String, SVIntervalTree<Tuple2<Boolean, Long>>> getIntervalEndsTrees(final int median, final JavaPairRDD<String, Tuple2<SVInterval, Long>> barcodesWithoutReadsWithIds) {
+        final JavaPairRDD<String, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeTrees = barcodesWithoutReadsWithIds.aggregateByKey(
+                null,
+                (tree, pair) -> {
+                    final SVInterval interval = pair._1;
+                    final Long id = pair._2;
+                    if (tree == null) {
+                        tree = new SVIntervalTree<Tuple2<Boolean, Long>>();
+                    }
+                    final SVInterval leftInterval = new SVInterval(
+                            interval.getContig(),
+                            Math.max(0, interval.getStart() - median),
+                            interval.getStart());
+                    tree.put(leftInterval, new Tuple2<>(false, id));
+                    final SVInterval rightInterval = new SVInterval(
+                            interval.getContig(),
+                            interval.getEnd(),
+                            interval.getEnd() + median);
+                    tree.put(rightInterval, new Tuple2<>(true, id));
+
+                    return tree;
+                },
+                (tree1, tree2) -> {
+
+                    if (tree1 == null) {
+                        tree1 = new SVIntervalTree<>();
+                    }
+                    if (tree2 == null) {
+                        tree2 = new SVIntervalTree<>();
+                    }
+                    final SVIntervalTree<Tuple2<Boolean, Long>> combinedTree = new SVIntervalTree<>();
+                    tree1.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
+                    tree2.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
+                    return combinedTree;
+                }
+        );
+
+        return barcodeTrees.collectAsMap();
+    }
+
+    private IntHistogram getGapSizeHistogram(final JavaPairRDD<String, Tuple2<SVInterval, List<ReadInfo>>> barcodeIntervalsWithReads) {
+        final List<IntHistogram> partitionHistograms = barcodeIntervalsWithReads.mapPartitions(iter -> {
+            IntHistogram intHistogram = new IntHistogram(MAX_TRACKED_VALUE);
+            while (iter.hasNext()) {
+                final Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>> next = iter.next();
+                final List<ReadInfo> readInfos = next._2()._2();
+                for (int i = 1; i < readInfos.size(); i++) {
+                    final int gap = readInfos.get(i).getStart() - readInfos.get(i - 1).getStart();
+                    intHistogram.addObservation(gap);
+                }
+            }
+            return SVUtils.singletonIterator(intHistogram);
+        }).collect();
+
+
+        return partitionHistograms.stream().reduce(
+                new IntHistogram(MAX_TRACKED_VALUE),
+                (h1, h2) -> {
+                    h1.addObservations(h2);
+                    return h1;
+                });
     }
 
     private JavaPairRDD<String, Tuple2<SVInterval, List<ReadInfo>>> parseBarcodeIntervals(final JavaSparkContext ctx,
