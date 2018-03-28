@@ -34,7 +34,7 @@ import java.util.stream.Collectors;
 )
 public class FindMoleculeGapsSpark extends GATKSparkTool {
     private static final long serialVersionUID = 1L;
-    public static final int MAX_TRACKED_VALUE = 10000;
+    public static final int MAX_TRACKED_VALUE = 20000;
 
     protected final Logger logger = LogManager.getLogger(this.getClass());
 
@@ -74,9 +74,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
                 final List<ReadInfo> readInfos = next._2()._2();
                 for (int i = 1; i < readInfos.size(); i++) {
                     final int gap = readInfos.get(i).getStart() - readInfos.get(i - 1).getStart();
-                    for (int j = 0; j < numObservations(gap); j++) {
-                        intHistogram.addObservation(gap);
-                    }
+                    intHistogram.addObservation(gap);
                 }
             }
             return SVUtils.singletonIterator(intHistogram);
@@ -90,6 +88,9 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
                 });
 
         logger.info("Median gap size: " + fullIntHistogram.getCDF().median());
+        logger.info("90th: " + fullIntHistogram.getCDF().popStat(0.90f));
+        logger.info("95th: " + fullIntHistogram.getCDF().popStat(0.95f));
+        logger.info("99th: " + fullIntHistogram.getCDF().popStat(0.99f));
 
         Broadcast<IntHistogram> broadcastHistogram = ctx.broadcast(fullIntHistogram);
 
