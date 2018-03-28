@@ -77,9 +77,6 @@ public class StrandedInterval {
 
     @Override
     public String toString() {
-        return "StrandedInterval{" +
-                "interval=" + interval +
-                ", strand=" + strand +
-                '}';
+        return interval.toString() + (strand ? "+" : "-");
     }
 }

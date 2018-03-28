@@ -38,4 +38,9 @@ public final class PairedStrandedIntervals {
         result = 31 * result + right.hashCode();
         return result;
     }
+
+    @Override
+    public String toString() {
+        return getLeft() + "\t" + getRight();
+    }
 }
