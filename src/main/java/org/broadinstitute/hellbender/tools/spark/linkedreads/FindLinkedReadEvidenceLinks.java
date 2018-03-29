@@ -267,9 +267,11 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                                                                                           final Broadcast<Map<String, Integer>> broadcastContigNameMap,
                                                                                           final Broadcast<Map<String, Integer>> broadcastBarcodeIdMap, final File inputLinkedReads) {
         final JavaRDD<String> stringJavaRDD = ctx.textFile(inputLinkedReads.getAbsolutePath());
+        logger.info("loaded text file into " + stringJavaRDD.getNumPartitions() + " partitions");
+        stringJavaRDD.repartition(ctx.defaultParallelism());
         final JavaPairRDD<Integer, Tuple2<SVInterval, List<ReadInfo>>> moleculeIntervals =
                 stringJavaRDD.mapToPair(line -> parseBarcodeIntervalLine(line, broadcastContigNameMap.getValue(), broadcastBarcodeIdMap.getValue()));
-
+        logger.info("molecule intervals are in " + stringJavaRDD.getNumPartitions() + " partitions");
         return moleculeIntervals;
 
     }
