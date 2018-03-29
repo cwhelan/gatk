@@ -95,19 +95,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final JavaRDD<Tuple2<PairedStrandedIntervals, Set<Integer>>> linksWithEnoughOverlappers = barcodesWithoutReadsWithIds
                 .mapToPair(pair -> new Tuple2<>(pair._2()._1(), new Tuple2<>(pair._1, pair._2._2)))
                 .repartitionAndSortWithinPartitions(
-                        new Partitioner() {
-                            private static final long serialVersionUID = 1L;
-                            @Override
-                            public int getPartition(final Object key) {
-                                final SVInterval interval = (SVInterval) key;
-                                return interval.getContig();
-                            }
-
-                            @Override
-                            public int numPartitions() {
-                                return 85;
-                            }
-                        }
+                        new ByContigPartitioner(broadcastContigNameMap.getValue().size())
                 )
                 .mapPartitions((iter) -> {
                     final PairedStrandedIntervalTree<Set<Integer>> results = new PairedStrandedIntervalTree<>();
@@ -257,7 +245,8 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 }
         );
 
-        final JavaPairRDD<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> filteredTrees = barcodeTrees.filter(pair -> pair._2().size() > 1);
+        final JavaPairRDD<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> filteredTrees =
+                barcodeTrees.filter(pair -> pair._2().size() > 1);
 
         return filteredTrees.collectAsMap();
     }
@@ -321,4 +310,23 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         return new Tuple2<>(barcode, new Tuple2<>(interval, readInfos));
     }
 
+    private static class ByContigPartitioner extends Partitioner {
+        private static final long serialVersionUID = 1L;
+        private final int numContigs;
+
+        public ByContigPartitioner(final int numContigs) {
+            this.numContigs = numContigs;
+        }
+
+        @Override
+        public int getPartition(final Object key) {
+            final SVInterval interval = (SVInterval) key;
+            return interval.getContig();
+        }
+
+        @Override
+        public int numPartitions() {
+            return numContigs;
+        }
+    }
 }
