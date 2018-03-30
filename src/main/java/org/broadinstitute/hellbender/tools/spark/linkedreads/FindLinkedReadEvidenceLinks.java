@@ -1,6 +1,7 @@
 package org.broadinstitute.hellbender.tools.spark.linkedreads;
 
 import htsjdk.samtools.util.BufferedLineReader;
+import ngs.Read;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.spark.Partitioner;
@@ -18,11 +19,11 @@ import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.*;
 import org.broadinstitute.hellbender.tools.spark.utils.IntHistogram;
+import org.broadinstitute.hellbender.utils.Utils;
+import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
 import scala.Tuple2;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -50,6 +51,9 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
     @Argument(doc = "barcode whitelist", shortName = "barcode-whitelist", fullName = "barcode-whitelist")
     public File barcodeWhitelist = null;
 
+    @Argument(doc = "expected gap length percentile", shortName = "gap-percentile", fullName = "gap-percentile")
+    public float gapPercentile = 0.5f;
+
     @Override
     public boolean requiresReference() {
         return true;
@@ -62,10 +66,11 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final ReferenceMultiSource reference = getReference();
 
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getReferenceSequenceDictionary());
-        final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
+        final String[] contigNames = ReadMetadata.buildIDToNameArray(contigNameToIdMap);
 
         final Map<String, Integer> barcodeToIdMap = buildBarcodeToIDMap(barcodeWhitelist);
         final Broadcast<Map<String, Integer>> broadcastBarcodeIdMap = ctx.broadcast(barcodeToIdMap);
+        final String[] barcodeNames = ReadMetadata.buildIDToNameArray(barcodeToIdMap);
 
         final Broadcast<Map<String, Integer>> broadcastContigNameMap = ctx.broadcast(contigNameToIdMap);
 
@@ -75,11 +80,12 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
         final IntHistogram fullIntHistogram = getGapSizeHistogram(barcodeIntervalsWithReads);
 
-        final int median = fullIntHistogram.getCDF().median();
-        logger.info("Median gap size: " + median);
+        logger.info("Median gap size: " + fullIntHistogram.getCDF().median());
         logger.info("90th: " + fullIntHistogram.getCDF().popStat(0.90f));
         logger.info("95th: " + fullIntHistogram.getCDF().popStat(0.95f));
         logger.info("99th: " + fullIntHistogram.getCDF().popStat(0.99f));
+
+        final int expectedGapLength = fullIntHistogram.getCDF().popStat(gapPercentile);
 
         barcodeIntervalsWithReads.unpersist();
         final JavaPairRDD<Integer, SVInterval> barcodeIntervalsWithoutReads = barcodeIntervalsWithReads.mapValues(Tuple2::_1);
@@ -88,7 +94,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 barcodeIntervalsWithoutReads.zipWithUniqueId()
                         .mapToPair(pair -> new Tuple2<>(pair._1._1, new Tuple2<>(pair._1._2(), pair._2))).cache();
 
-        final Map<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeEndTrees = getIntervalEndsTrees(median, barcodesWithoutReadsWithIds);
+        final Map<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeEndTrees = getIntervalEndsTrees(expectedGapLength, barcodesWithoutReadsWithIds);
         logger.info("Collected barcode ends for " + barcodeEndTrees.size() + " barcodes.");
         final Broadcast<Map<Integer, SVIntervalTree<Tuple2<Boolean, Long>>>> broadcastIntervalEnds = ctx.broadcast(barcodeEndTrees);
 
@@ -108,12 +114,12 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         final SVInterval moleculeInterval = next._1();
                         final SVInterval leftInterval = new SVInterval(
                                 moleculeInterval.getContig(),
-                                Math.max(0, moleculeInterval.getStart() - median),
+                                Math.max(0, moleculeInterval.getStart() - expectedGapLength),
                                 moleculeInterval.getStart());
                         final SVInterval rightInterval = new SVInterval(
                                 moleculeInterval.getContig(),
                                 moleculeInterval.getEnd(),
-                                moleculeInterval.getEnd() + median);
+                                moleculeInterval.getEnd() + expectedGapLength);
 
                         final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapScanIterator = links.iterator();
                         while (overlapScanIterator.hasNext()) {
@@ -193,12 +199,16 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                             final SVInterval endInterval = entry.getInterval();
 
                             if (!moleculeId.equals(entry.getValue()._2())) {
-                                links.put(new PairedStrandedIntervals(
-                                        new StrandedInterval(leftInterval, false),
-                                        new StrandedInterval(endInterval, entry.getValue()._1)), barcode);
-                                links.put(new PairedStrandedIntervals(
-                                        new StrandedInterval(rightInterval, true),
-                                        new StrandedInterval(endInterval, entry.getValue()._1)), barcode);
+                                if (leftInterval.isUpstreamOf(endInterval)) {
+                                    links.put(new PairedStrandedIntervals(
+                                            new StrandedInterval(leftInterval, false),
+                                            new StrandedInterval(endInterval, entry.getValue()._1)), barcode);
+                                }
+                                if (rightInterval.isUpstreamOf(endInterval)) {
+                                    links.put(new PairedStrandedIntervals(
+                                            new StrandedInterval(rightInterval, true),
+                                            new StrandedInterval(endInterval, entry.getValue()._1)), barcode);
+                                }
                             }
 
                         });
@@ -208,7 +218,43 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 }
         );
 
-        linksWithEnoughOverlappers.saveAsTextFile("bar");
+        final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> collectedLinks = linksWithEnoughOverlappers.collect();
+        writeEvidenceLinks(collectedLinks, out, contigNames, barcodeNames);
+    }
+
+    private static void writeEvidenceLinks(final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> targetLinks,
+                                           final String targetLinkFile,
+                                           final String[] contigNames,
+                                           final String[] barcodeNames) {
+        if ( targetLinkFile != null ) {
+            try (final OutputStreamWriter writer =
+                         new OutputStreamWriter(new BufferedOutputStream(BucketUtils.createFile(targetLinkFile)))) {
+                targetLinks.iterator().forEachRemaining(entry -> {
+                    final String bedpeRecord = toBedpeString(entry, contigNames, barcodeNames);
+                    try {
+                        writer.write(bedpeRecord + "\n");
+                    } catch (final IOException ioe) {
+                        throw new GATKException("Can't write target links to "+ targetLinkFile, ioe);
+                    }
+                });
+            } catch ( final IOException ioe ) {
+                throw new GATKException("Can't write target links to "+ targetLinkFile, ioe);
+            }
+        }
+    }
+
+    public static String toBedpeString(Tuple2<PairedStrandedIntervals, Set<Integer>> entry, final String[] contigNames, final String[] barcodeNames) {
+        final SVInterval sourceInterval = entry._1().getLeft().getInterval();
+        final SVInterval targetInterval = entry._1().getRight().getInterval();
+        String sourceContigName = contigNames[sourceInterval.getContig()];
+        String targetContigName = contigNames[targetInterval.getContig()];
+        return sourceContigName + "\t" + (sourceInterval.getStart() - 1) + "\t" + sourceInterval.getEnd() +
+                "\t" + targetContigName + "\t" + (targetInterval.getStart() - 1) + "\t" + targetInterval.getEnd() +
+                "\t"  + sourceContigName + "_" + (sourceInterval.getStart() - 1) + "_" + sourceInterval.getEnd() + "_" +
+                targetContigName + "_" + (targetInterval.getStart() - 1) + "_" + targetInterval.getEnd() + "_" +
+                (entry._1().getLeft().getStrand() ? "P" : "M") + "_" + (entry._1().getRight().getStrand() ? "P" : "M") + "_" + entry._2().size() +
+                "\t" + entry._2().size() + "\t" + (entry._1().getLeft().getStrand() ? "+" : "-") + "\t" + (entry._1.getRight().getStrand() ? "+" : "-")
+                + "\t" + Utils.join(",", entry._2.stream().map(i -> barcodeNames[i]).collect(Collectors.toList()));
     }
 
     private Map<String, Integer> buildBarcodeToIDMap(final File barcodeWhitelist) {
@@ -229,7 +275,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         return barcodeMap;
     }
 
-    private Map<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> getIntervalEndsTrees(final int median,
+    private Map<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> getIntervalEndsTrees(final int expectedGapLength,
                                                                                     final JavaPairRDD<Integer, Tuple2<SVInterval, Long>> barcodesWithoutReadsWithIds) {
         final JavaPairRDD<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeTrees = barcodesWithoutReadsWithIds.aggregateByKey(
                 null,
@@ -241,13 +287,13 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     }
                     final SVInterval leftInterval = new SVInterval(
                             interval.getContig(),
-                            Math.max(0, interval.getStart() - median),
+                            Math.max(0, interval.getStart() - expectedGapLength),
                             interval.getStart());
                     tree.put(leftInterval, new Tuple2<>(false, id));
                     final SVInterval rightInterval = new SVInterval(
                             interval.getContig(),
                             interval.getEnd(),
-                            interval.getEnd() + median);
+                            interval.getEnd() + expectedGapLength);
                     tree.put(rightInterval, new Tuple2<>(true, id));
 
                     return tree;

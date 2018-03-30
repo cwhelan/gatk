@@ -14,7 +14,6 @@ import org.apache.spark.api.java.JavaRDD;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVUtils;
 import org.broadinstitute.hellbender.tools.spark.utils.IntHistogram;
-import org.broadinstitute.hellbender.utils.MathUtils;
 import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
 import org.broadinstitute.hellbender.utils.read.CigarUtils;
 import org.broadinstitute.hellbender.utils.read.GATKRead;
@@ -58,7 +57,7 @@ public class ReadMetadata {
                          final Logger logger ) {
         this.crossContigIgnoreSet = crossContigIgnoreSet;
         contigNameToID = buildContigNameToIDMap(header.getSequenceDictionary());
-        contigIDToName = buildContigIDToNameArray(contigNameToID);
+        contigIDToName = buildIDToNameArray(contigNameToID);
         readGroupToLibrary = buildGroupToLibMap(header);
         final Map<String, String> grpToLib = readGroupToLibrary;
         final List<PartitionStatistics> perPartitionStatistics =
@@ -111,7 +110,7 @@ public class ReadMetadata {
                   final long nReads, final long maxReadsInPartition, final int coverage ) {
         this.crossContigIgnoreSet = crossContigIgnoreSet;
         contigNameToID = buildContigNameToIDMap(header.getSequenceDictionary());
-        contigIDToName = buildContigIDToNameArray(contigNameToID);
+        contigIDToName = buildIDToNameArray(contigNameToID);
         readGroupToLibrary = buildGroupToLibMap(header);
         this.nReads = nReads;
         nRefBases = header.getSequenceDictionary().getSequences()
@@ -150,7 +149,7 @@ public class ReadMetadata {
             final int contigId = input.readInt();
             contigNameToID.put(contigName, contigId);
         }
-        contigIDToName = buildContigIDToNameArray(contigNameToID);
+        contigIDToName = buildIDToNameArray(contigNameToID);
 
         nReads = input.readLong();
         avgReadLen = input.readInt();
@@ -322,7 +321,7 @@ public class ReadMetadata {
         return contigNameToID;
     }
 
-    public static String[] buildContigIDToNameArray( final Map<String, Integer> nameToIDMap ) {
+    public static String[] buildIDToNameArray(final Map<String, Integer> nameToIDMap ) {
         final String[] result = new String[nameToIDMap.size()];
         for ( final Map.Entry<String, Integer> entry : nameToIDMap.entrySet() ) {
             result[entry.getValue()] = entry.getKey();
