@@ -242,7 +242,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
 
             final List<Tuple2<SVInterval, String>> results = new ArrayList<>();
             for (final SVIntervalTree.Entry<List<ReadInfo>> next : svIntervalTree) {
-                results.add(new Tuple2<>(next.getInterval(), intervalTreeToBedRecord(barcode, next, contigNames.getValue())));
+                results.add(new Tuple2<>(next.getInterval(), intervalTreeToBedRecord(barcode, contigNames.getValue(), next.getInterval(), next.getValue())));
             }
 
             return results.iterator();
@@ -259,7 +259,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         }
     }
 
-    private static void unshardOutput(final String out, final String shardedOutputDirectory, final int numParts) {
+    static void unshardOutput(final String out, final String shardedOutputDirectory, final int numParts) {
         final OutputStream outputStream;
 
         outputStream = new BlockCompressedOutputStream(new BufferedOutputStream(BucketUtils.createFile(out)), null);
@@ -672,38 +672,32 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         return currentEnd + clusterSize > newInterval.getStart() - clusterSize;
     }
 
-    static String intervalTreeToBedRecord(final String barcode, final SVIntervalTree.Entry<List<ReadInfo>> node, final String[] contigNames) {
+    static String intervalTreeToBedRecord(final String barcode, final String[] contigNames, final SVInterval interval, final List<ReadInfo> reads) {
         final StringBuilder builder = new StringBuilder();
-        builder.append(contigNames[node.getInterval().getContig()]);
+        builder.append(contigNames[interval.getContig()]);
         builder.append("\t");
-        builder.append(node.getInterval().getStart());
+        builder.append(interval.getStart());
         builder.append("\t");
-        builder.append(node.getInterval().getEnd());
+        builder.append(interval.getEnd());
         builder.append("\t");
         builder.append(barcode);
         builder.append("\t");
-        builder.append(node.getValue() == null ? "." : node.getValue().size());
+        builder.append(reads == null ? "." : reads.size());
         builder.append("\t");
         builder.append("+");
         builder.append("\t");
-        builder.append(node.getInterval().getStart());
+        builder.append(interval.getStart());
         builder.append("\t");
-        builder.append(node.getInterval().getEnd());
+        builder.append(interval.getEnd());
         builder.append("\t");
         builder.append("0,0,255");
         builder.append("\t");
-        builder.append(node.getValue() == null ? "." : node.getValue().size());
-        final List<ReadInfo> reads;
-        if (node.getValue() != null) {
-            reads = node.getValue();
-            reads.sort(Comparator.comparingInt(ReadInfo::getStart));
-        } else {
-            reads = null;
-        }
+        builder.append(reads == null ? "." : reads.size());
+        reads.sort(Comparator.comparingInt(ReadInfo::getStart));
         builder.append("\t");
         builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getEnd() - r.getStart() + 1)).collect(Collectors.joining(",")));
         builder.append("\t");
-        builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getStart() - node.getInterval().getStart())).collect(Collectors.joining(",")));
+        builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getStart() - interval.getStart())).collect(Collectors.joining(",")));
         builder.append("\t");
         builder.append(reads == null ? "." : reads.stream().mapToInt(ReadInfo::getMapq).max().orElse(-1));
         return builder.toString();

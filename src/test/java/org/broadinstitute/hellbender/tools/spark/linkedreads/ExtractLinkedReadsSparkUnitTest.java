@@ -135,7 +135,7 @@ public class ExtractLinkedReadsSparkUnitTest {
 
         final String barcode = "ACTGACTG";
 
-        final String bedRecord = ExtractLinkedReadsSpark.intervalTreeToBedRecord(barcode, tree.iterator().next(), contigNames);
+        final String bedRecord = ExtractLinkedReadsSpark.intervalTreeToBedRecord(barcode, contigNames, tree.iterator().next().getInterval(),  tree.iterator().next().getValue());
         Assert.assertEquals(bedRecord, "1\t1000\t1159\tACTGACTG\t5\t+\t1000\t1159\t0,0,255\t5\t10,11,10,9,10\t0,20,25,45,150\t60");
 
     }
@@ -166,7 +166,6 @@ public class ExtractLinkedReadsSparkUnitTest {
         Assert.assertEquals(unTrimmedTree.size(), 1);
         Assert.assertEquals(unTrimmedTree.findByIndex(0).getValue().size(), 5);
         Assert.assertEquals(unTrimmedTree.findByIndex(0).getInterval(), new SVInterval(contigIdToContigNameMap.get("1"), 1000, 1159));
-
     }
 
     private SVIntervalTree<List<ReadInfo>> createTestSVIntervalTree1(final SAMFileHeader artificialSamHeader) {
