@@ -52,7 +52,7 @@ public class ReadClassifier implements Function<GATKRead, Iterator<BreakpointEvi
         if (regionsToIgnore != null) {
             final int readContigId = readMetadata.getContigID(read.getContig());
             final SVInterval clippedReadInterval = new SVInterval(readContigId, read.getStart(), read.getEnd());
-            if (filter.containedInRegionToIgnore(clippedReadInterval, regionsToIgnore)) {
+            if (SVReadFilter.containedInRegionToIgnore(clippedReadInterval, regionsToIgnore)) {
                 return Collections.emptyIterator();
             }
         }
