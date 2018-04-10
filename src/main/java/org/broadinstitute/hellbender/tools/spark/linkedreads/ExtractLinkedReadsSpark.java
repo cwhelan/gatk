@@ -12,13 +12,17 @@ import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.broadcast.Broadcast;
 import org.broadinstitute.barclay.argparser.Argument;
+import org.broadinstitute.barclay.argparser.ArgumentCollection;
 import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.LinkedReadsProgramGroup;
 import org.broadinstitute.hellbender.engine.filters.ReadFilter;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
 import org.broadinstitute.hellbender.exceptions.GATKException;
+import org.broadinstitute.hellbender.tools.spark.sv.StructuralVariationDiscoveryArgumentCollection;
+import org.broadinstitute.hellbender.tools.spark.sv.evidence.FindBreakpointEvidenceSpark;
 import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
+import org.broadinstitute.hellbender.tools.spark.sv.evidence.SVReadFilter;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVInterval;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVIntervalTree;
 import org.broadinstitute.hellbender.utils.Utils;
@@ -89,6 +93,26 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     @Argument(fullName = "min-max-mapq", shortName = "min-max-mapq", doc="Minimum highest mapq read to create a fragment", optional=true)
     public int minMaxMapq = 30;
 
+    @Argument(fullName = "filter-high-depth", shortName = "filter-high-depth", doc="Filter out high-depth regions as defined by high-depth-coverage-peak-factor and high-depth-coverage-factor", optional=true)
+    public boolean filterHighDepth = false;
+
+    @Argument(doc = "Largest fragment size that will be explicitly counted in determining " +
+            "fragment size statistics.", fullName = "max-tracked-fragment-length")
+    public int maxTrackedFragmentLength = 2000;
+
+    @Argument(doc = "We filter out contiguous regions of the genome that have coverage of at least high-depth-coverage-factor * avg-coverage and a " +
+            "peak coverage of high-depth-coverage-peak-factor * avg-coverage, because the reads mapped to those regions tend to be non-local and high depth prevents accurate assembly.",
+            fullName = "high-depth-coverage-factor")
+    public int highDepthCoverageFactor = 4;
+
+    @Argument(doc = "We filter out contiguous regions of the genome that have coverage of at least high-depth-coverage-factor * avg-coverage and a " +
+            "peak coverage of high-depth-coverage-peak-factor * avg-coverage, because the reads mapped to those regions tend to be non-local and high depth prevents accurate assembly.",
+            fullName = "high-depth-coverage-peak-factor")
+    public int highDepthCoveragePeakFactor = 10;
+
+
+    @Argument(doc = "file for high-coverage intervals output", fullName = "high-coverage-intervals", optional = true)
+    public String highCoverageIntervalsFile;
 
     @Override
     public boolean requiresReads() { return true; }
@@ -115,12 +139,35 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getHeaderForReads().getSequenceDictionary());
         final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
 
+        final StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection params =
+                new StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection();
+        params.highDepthCoverageFactor = highDepthCoverageFactor;
+        params.highDepthCoveragePeakFactor = highDepthCoveragePeakFactor;
+        params.highCoverageIntervalsFile = highCoverageIntervalsFile;
+
+        final SVIntervalTree<SVInterval> highCoverageSubintervalTree;
+        if (filterHighDepth) {
+            final SVReadFilter filter = new SVReadFilter(params);
+
+            final ReadMetadata readMetadata =
+                    new ReadMetadata(Collections.emptySet(), getHeaderForReads(), maxTrackedFragmentLength, getUnfilteredReads(), filter, logger);
+            final Broadcast<ReadMetadata> broadcastMetadata = ctx.broadcast(readMetadata);
+
+            highCoverageSubintervalTree = FindBreakpointEvidenceSpark.findGenomewideHighCoverageIntervalsToIgnore(params, readMetadata, ctx,
+                    getHeaderForReads(), getUnfilteredReads(), filter, logger, broadcastMetadata);
+
+            broadcastMetadata.destroy();
+        } else {
+            highCoverageSubintervalTree = new SVIntervalTree<>();
+        }
+
+        Broadcast<SVIntervalTree<SVInterval>> broadcastHighDepthIntervals = ctx.broadcast(highCoverageSubintervalTree);
         logger.info("Loading linked reads");
         final Broadcast<Map<String, Integer>> broadcastContigNameMap = ctx.broadcast(contigNameToIdMap);
         final Broadcast<String[]> broadcastContigNames =  ctx.broadcast(contigNames);
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals
-            = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastContigNameMap, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold)
+            = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastContigNameMap, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold, broadcastHighDepthIntervals)
                 .repartition(ctx.defaultParallelism()).cache();
 
         if (barcodeFragmentCountsFile != null) {
@@ -223,12 +270,16 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         for (int i = 0; i < numParts; i++) {
             String fileName = String.format("part-%1$05d", i);
             try {
-                final BufferedInputStream bufferedInputStream = new BufferedInputStream(Files.newInputStream(NIOFileUtil.asPath(shardedOutputDirectory + System.getProperty("file.separator") + fileName)));
-                int bite;
-                while ((bite = bufferedInputStream.read()) != -1) {
-                    outputStream.write(bite);
+                Path path = NIOFileUtil.asPath(shardedOutputDirectory + System.getProperty("file.separator") + fileName);
+                if (Files.exists(path)) {
+                    final BufferedInputStream bufferedInputStream = new BufferedInputStream(Files.newInputStream(path));
+                    int bite;
+                    while ((bite = bufferedInputStream.read()) != -1) {
+                        outputStream.write(bite);
+                    }
+                    bufferedInputStream.close();
                 }
-                bufferedInputStream.close();
+
             } catch (IOException e) {
                 throw new GATKException(e.getMessage());
             }
@@ -306,8 +357,8 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                                                                                            final Broadcast<Map<String, Integer>> broadcastContigNameMap,
                                                                                            final int minReadCountPerMol,
                                                                                            final int minMaxMapq,
-                                                                                           final int edgeReadMapqThreshold) {
-        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC = getClusteredReadIntervalsByTag(finalClusterSize, mappedReads, broadcastContigNameMap, "BX");
+                                                                                           final int edgeReadMapqThreshold, final Broadcast<SVIntervalTree<SVInterval>> broadcastHighDepthIntervals) {
+        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC = getClusteredReadIntervalsByTag(finalClusterSize, mappedReads, broadcastContigNameMap, "BX", broadcastHighDepthIntervals);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlappersRemovedClusteredReads = overlapperFilter(readsClusteredByBC, finalClusterSize);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> edgefilteredClusteredReads = edgeFilterFragments(overlappersRemovedClusteredReads, edgeReadMapqThreshold);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFragments = minMoleculeCountFilterFragments(edgefilteredClusteredReads, minReadCountPerMol);
@@ -459,9 +510,9 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
             }
             if (trimmed) {
                 treeIterator.remove();
-            }
-            if (!entry.getValue().isEmpty()) {
-                modifiedValues.add(entry.getValue());
+                if (!entry.getValue().isEmpty()) {
+                    modifiedValues.add(entry.getValue());
+                }
             }
         }
         modifiedValues.forEach(l -> {
@@ -474,9 +525,10 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> getClusteredReadIntervalsByTag(final int finalClusterSize,
                                                                                                       final JavaRDD<GATKRead> mappedReads,
                                                                                                       final Broadcast<Map<String, Integer>> broadcastContigNameMap,
-                                                                                                      final String tag) {
+                                                                                                      final String tag, final Broadcast<SVIntervalTree<SVInterval>> broadcastHighDepthIntervals) {
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> intervalsByKey = mappedReads.filter(GATKRead::isFirstOfPair)
+                .filter(read -> highDepthRegionFilter(broadcastContigNameMap, broadcastHighDepthIntervals, read))
                 .mapToPair(read -> new Tuple2<>(read.getAttributeAsString(tag), new ReadInfo(broadcastContigNameMap.getValue(), read)))
                 .combineByKey(
                         readInfo -> {
@@ -489,6 +541,16 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                 );
 
         return intervalsByKey;
+    }
+
+    private static Boolean highDepthRegionFilter(final Broadcast<Map<String, Integer>> broadcastContigNameMap, final Broadcast<SVIntervalTree<SVInterval>> broadcastHighDepthIntervals, final GATKRead read) {
+        if (broadcastHighDepthIntervals.getValue() != null) {
+            final int readContigId = broadcastContigNameMap.getValue().get(read.getContig());
+            final SVInterval clippedReadInterval = new SVInterval(readContigId, read.getStart(), read.getEnd());
+            return ! SVReadFilter.containedInRegionToIgnore(clippedReadInterval, broadcastHighDepthIntervals.getValue());
+        } else {
+            return true;
+        }
     }
 
     /**
