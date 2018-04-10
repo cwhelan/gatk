@@ -340,7 +340,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         return new EvidenceScanResults(readMetadata, intervals, intervalsAndEvidenceTargetLinks._2(), qNamesMultiMap);
     }
 
-    static SVIntervalTree<SVInterval> findGenomewideHighCoverageIntervalsToIgnore(final FindBreakpointEvidenceSparkArgumentCollection params,
+    public static SVIntervalTree<SVInterval> findGenomewideHighCoverageIntervalsToIgnore(final FindBreakpointEvidenceSparkArgumentCollection params,
                                                                                   final ReadMetadata readMetadata,
                                                                                   final JavaSparkContext ctx,
                                                                                   final SAMFileHeader header,

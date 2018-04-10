@@ -48,7 +48,7 @@ public final class QNameFinder implements Function<GATKRead, Iterator<QNameAndIn
         final SVInterval unclippedReadInterval = new SVInterval(readContigId, read.getUnclippedStart(), read.getUnclippedEnd());
         if ( indexedInterval.isDisjointFrom(unclippedReadInterval) ) return noName;
         final SVInterval clippedReadInterval = new SVInterval(readContigId, read.getStart(), read.getEnd());
-        if (filter.containedInRegionToIgnore(clippedReadInterval, highCoverageSubIntervals)) return noName;
+        if (SVReadFilter.containedInRegionToIgnore(clippedReadInterval, highCoverageSubIntervals)) return noName;
         return new SingletonIterator<>(new QNameAndInterval(read.getName(), intervalsIndex));
     }
 

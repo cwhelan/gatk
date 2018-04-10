@@ -65,7 +65,7 @@ public class SVReadFilter implements Serializable {
                 read.getStart() - allowedShortFragmentOverhang <= read.getMateStart();
     }
 
-    public boolean containedInRegionToIgnore(final SVInterval interval, final SVIntervalTree<SVInterval> regionsToIgnore) {
+    public static boolean containedInRegionToIgnore(final SVInterval interval, final SVIntervalTree<SVInterval> regionsToIgnore) {
         final Iterator<SVIntervalTree.Entry<SVInterval>> overlappers = regionsToIgnore.overlappers(interval);
         while (overlappers.hasNext()) {
             SVIntervalTree.Entry<SVInterval> depthFilteredInterval = overlappers.next();
