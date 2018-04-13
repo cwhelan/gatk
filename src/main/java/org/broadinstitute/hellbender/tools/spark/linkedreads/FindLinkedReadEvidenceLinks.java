@@ -92,10 +92,9 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
         JavaPairRDD<Integer, Tuple2<SVInterval, Long>> barcodesWithoutReadsWithIds =
                 barcodeIntervalsWithoutReads.zipWithUniqueId()
-                        .mapToPair(pair -> new Tuple2<>(pair._1._1, new Tuple2<>(pair._1._2(), pair._2))).cache();
+                        .mapToPair(pair -> new Tuple2<>(pair._1._1, new Tuple2<>(pair._1._2(), pair._2)));
 
         final Map<Integer, SVIntervalTree<Tuple2<Boolean, Long>>> barcodeEndTrees = getIntervalEndsTrees(expectedGapLength, barcodesWithoutReadsWithIds);
-        logger.info("Collected barcode ends for " + barcodeEndTrees.size() + " barcodes.");
         final Broadcast<Map<Integer, SVIntervalTree<Tuple2<Boolean, Long>>>> broadcastIntervalEnds = ctx.broadcast(barcodeEndTrees);
 
         final JavaRDD<Tuple2<PairedStrandedIntervals, Set<Integer>>> linksWithEnoughOverlappers = barcodesWithoutReadsWithIds
