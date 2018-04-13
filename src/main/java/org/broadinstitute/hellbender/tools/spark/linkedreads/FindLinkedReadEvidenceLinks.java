@@ -86,8 +86,8 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
         final int expectedGapLength = fullIntHistogram.getCDF().popStat(gapPercentile);
 
-        barcodeIntervalsWithReads.unpersist();
         final JavaPairRDD<Integer, SVInterval> barcodeIntervalsWithoutReads = barcodeIntervalsWithReads.mapValues(Tuple2::_1);
+        barcodeIntervalsWithReads.unpersist();
 
 //        JavaPairRDD<Integer, Tuple2<SVInterval, Long>> barcodesWithoutReadsWithIds =
 //                barcodeIntervalsWithoutReads.zipWithUniqueId()
