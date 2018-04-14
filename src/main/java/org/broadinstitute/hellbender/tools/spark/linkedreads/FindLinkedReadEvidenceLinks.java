@@ -96,13 +96,13 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final Map<Integer, SVIntervalTree<Boolean>> barcodeEndTrees = getIntervalEndsTrees(expectedGapLength, barcodeIntervalsWithoutReads);
         final Broadcast<Map<Integer, SVIntervalTree<Boolean>>> broadcastIntervalEnds = ctx.broadcast(barcodeEndTrees);
 
-        final JavaRDD<Tuple2<PairedStrandedIntervals, Set<Integer>>> linksWithEnoughOverlappers = barcodeIntervalsWithoutReads
+        final JavaRDD<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> linksWithEnoughOverlappers = barcodeIntervalsWithoutReads
                 .mapToPair(pair -> new Tuple2<>(pair._2(), pair._1))
                 .repartitionAndSortWithinPartitions(
                         new ByContigPartitioner(broadcastContigNameMap.getValue().size())
                 )
                 .mapPartitions((iter) -> {
-                    final PairedStrandedIntervalTree<Set<Integer>> results = new PairedStrandedIntervalTree<>();
+                    final PairedStrandedIntervalTree<Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> results = new PairedStrandedIntervalTree<>();
                     final PairedStrandedIntervalTree<Integer> links = new PairedStrandedIntervalTree<>();
                     final Map<Integer, SVIntervalTree<Boolean>> intervalEnds = broadcastIntervalEnds.getValue();
                     while (iter.hasNext()) {
@@ -148,16 +148,20 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                                         newGoodPairedStrandedIntervals.getLeft(),
                                         newGoodPairedStrandedIntervals.getRight());
                                 final Set<Integer> newOverlapperBarcodes = new HashSet<>(overlapperBarcodes);
+                                final boolean leftStrand = link._1.getLeft().getStrand();
+                                int leftEventCutoff = leftStrand ? -1 : Integer.MAX_VALUE;
+                                final boolean rightStrand = link._1.getRight().getStrand();
+                                int rightEventCutoff = rightStrand ? Integer.MAX_VALUE : -1;
 
                                 boolean maybeMoreOverlappers = true;
                                 while(maybeMoreOverlappers) {
-                                    final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> previousOverlappers =
+                                    final Iterator<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> previousOverlappers =
                                             results.overlappers(newLink);
                                     if (!previousOverlappers.hasNext()) {
                                         maybeMoreOverlappers = false;
                                     } else {
                                         // todo: maybe slop here?
-                                        final Tuple2<PairedStrandedIntervals, Set<Integer>> previousOverlapper = previousOverlappers.next();
+                                        final Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> previousOverlapper = previousOverlappers.next();
                                         newLink = new PairedStrandedIntervals(
                                                 new StrandedInterval(newLink.getLeft().getInterval().join(
                                                         previousOverlapper._1().getLeft().getInterval()
@@ -165,11 +169,13 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                                                 new StrandedInterval(newLink.getRight().getInterval().join(
                                                         previousOverlapper._1().getRight().getInterval()
                                                 ), newLink.getRight().getStrand()));
-                                        newOverlapperBarcodes.addAll(previousOverlapper._2());
+                                        newOverlapperBarcodes.addAll(previousOverlapper._2()._1());
+                                        leftEventCutoff = leftStrand ? Math.max(leftEventCutoff, previousOverlapper._2()._2()._1()) : Math.min(leftEventCutoff, previousOverlapper._2()._2()._1());
+                                        rightEventCutoff = rightStrand ? Math.max(rightEventCutoff, previousOverlapper._2()._2()._2()) : Math.min(rightEventCutoff, previousOverlapper._2()._2()._2());
                                         previousOverlappers.remove();
                                     }
                                 }
-                                results.put(newGoodPairedStrandedIntervals, newOverlapperBarcodes);
+                                results.put(newGoodPairedStrandedIntervals, new Tuple2<>(newOverlapperBarcodes, new Tuple2<>(leftEventCutoff, rightEventCutoff)));
                             }
                         }
 
@@ -218,11 +224,11 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 }
         );
 
-        final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> collectedLinks = linksWithEnoughOverlappers.collect();
+        final List<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> collectedLinks = linksWithEnoughOverlappers.collect();
         writeEvidenceLinks(collectedLinks, out, contigNames, barcodeNames);
     }
 
-    private static void writeEvidenceLinks(final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> targetLinks,
+    private static void writeEvidenceLinks(final List<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> targetLinks,
                                            final String targetLinkFile,
                                            final String[] contigNames,
                                            final String[] barcodeNames) {
@@ -243,18 +249,32 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         }
     }
 
-    public static String toBedpeString(Tuple2<PairedStrandedIntervals, Set<Integer>> entry, final String[] contigNames, final String[] barcodeNames) {
+    public static String toBedpeString(Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> entry, final String[] contigNames, final String[] barcodeNames) {
         final SVInterval sourceInterval = entry._1().getLeft().getInterval();
         final SVInterval targetInterval = entry._1().getRight().getInterval();
         String sourceContigName = contigNames[sourceInterval.getContig()];
         String targetContigName = contigNames[targetInterval.getContig()];
-        return sourceContigName + "\t" + (sourceInterval.getStart() - 1) + "\t" + sourceInterval.getEnd() +
-                "\t" + targetContigName + "\t" + (targetInterval.getStart() - 1) + "\t" + targetInterval.getEnd() +
-                "\t"  + sourceContigName + "_" + (sourceInterval.getStart() - 1) + "_" + sourceInterval.getEnd() + "_" +
-                targetContigName + "_" + (targetInterval.getStart() - 1) + "_" + targetInterval.getEnd() + "_" +
-                (entry._1().getLeft().getStrand() ? "P" : "M") + "_" + (entry._1().getRight().getStrand() ? "P" : "M") + "_" + entry._2().size() +
-                "\t" + entry._2().size() + "\t" + (entry._1().getLeft().getStrand() ? "+" : "-") + "\t" + (entry._1.getRight().getStrand() ? "+" : "-")
-                + "\t" + Utils.join(",", entry._2.stream().map(i -> barcodeNames[i]).collect(Collectors.toList()));
+
+        final int leftEventCut = entry._2()._2()._1();
+        final int rightEventCut = entry._2()._2()._2();
+
+        final boolean leftStrand = entry._1().getLeft().getStrand();
+        final int leftStart = leftStrand ? leftEventCut : sourceInterval.getStart() - 1;
+        final int leftEnd = leftStrand ? sourceInterval.getEnd() : leftEventCut;
+
+        final boolean rightStrand = entry._1().getRight().getStrand();
+        final int rightStart = rightStrand ? rightEventCut : targetInterval.getStart() - 1;
+        final int rightEnd = rightStrand ? targetInterval.getEnd() : rightEventCut;
+
+        final Set<Integer> barcodes = entry._2()._1();
+
+        return sourceContigName + "\t" + leftStart + "\t" + leftEnd +
+                "\t" + targetContigName + "\t" + rightStart + "\t" + rightEnd +
+                "\t"  + sourceContigName + "_" + leftStart + "_" + leftEnd + "_" +
+                targetContigName + "_" + rightStart + "_" + rightEnd + "_" +
+                (leftStrand ? "P" : "M") + "_" + (rightStrand ? "P" : "M") + "_" + barcodes.size() +
+                "\t" + barcodes.size() + "\t" + (leftStrand ? "+" : "-") + "\t" + (rightStrand ? "+" : "-")
+                + "\t" + Utils.join(",", barcodes.stream().map(i -> barcodeNames[i]).collect(Collectors.toList()));
     }
 
     private Map<String, Integer> buildBarcodeToIDMap(final File barcodeWhitelist) {
