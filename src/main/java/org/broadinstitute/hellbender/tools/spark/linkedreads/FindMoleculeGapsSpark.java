@@ -119,8 +119,8 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
             final int[] gaps = gapList.stream().mapToInt(i -> i).toArray();
             Arrays.sort(gaps);
 
-            final int bandwidth = 500;
-            final int minClusterSize = 10;
+            final int bandwidth = 1000;
+            final int minClusterSize = 5;
 
             List<Tuple2<StrandedInterval, Tuple2<Integer, Integer>>> clusters = new ArrayList<>();
             int currentClusterStart = 0;
@@ -148,7 +148,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
 
             return clusters.iterator();
         }).cache();
-        //clustersAtQueryPoints.saveAsTextFile("foo2");
+        clustersAtQueryPoints.saveAsTextFile("foo2");
 
         final List<Tuple2<StrandedInterval, Tuple2<Integer, Integer>>> clustersAtQueryPointsLocal = clustersAtQueryPoints.collect();
         final SVIntervalTree<List<Tuple2<Boolean, Tuple2<Integer, Integer>>>> gapClusterTree = new SVIntervalTree<>();
