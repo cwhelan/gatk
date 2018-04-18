@@ -4,6 +4,7 @@ import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import htsjdk.samtools.SAMFileHeader;
+import org.broadinstitute.hellbender.GATKBaseTest;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVInterval;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.SVIntervalTree;
 import org.broadinstitute.hellbender.utils.read.ArtificialReadUtils;
@@ -18,7 +19,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class ExtractLinkedReadsSparkUnitTest {
+public class ExtractLinkedReadsSparkUnitTest extends GATKBaseTest {
 
     private static final SAMFileHeader artificialSamHeader =
             ArtificialReadUtils.createArtificialSamHeaderWithGroups(2, 1, 1000000, 1);

@@ -94,6 +94,25 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 //                        .mapToPair(pair -> new Tuple2<>(pair._1._1, new Tuple2<>(pair._1._2(), pair._2)));
 
         final Map<Integer, SVIntervalTree<Boolean>> barcodeEndTrees = getIntervalEndsTrees(expectedGapLength, barcodeIntervalsWithoutReads);
+
+            try (final OutputStreamWriter writer =
+                         new OutputStreamWriter(new BufferedOutputStream(BucketUtils.createFile("bar")))) {
+                barcodeEndTrees.keySet().iterator().forEachRemaining(entry -> {
+                    final SVIntervalTree<Boolean> entries = barcodeEndTrees.get(entry);
+
+                        entries.forEach(e -> {
+                            try {
+                                writer.write( contigNames[e.getInterval().getContig()] + "\t" + e.getInterval().getStart() + "\t" + e.getInterval().getEnd() + "\t" + barcodeNames[entry] + "\t-1\t" + (e.getValue() ? "+" : "-") + "\n");
+                            } catch (IOException e1) {
+                                e1.printStackTrace();
+                            }
+                        });
+                });
+            } catch ( final IOException ioe ) {
+                throw new GATKException("Can't write target links to "+ "bar", ioe);
+            }
+
+
         final Broadcast<Map<Integer, SVIntervalTree<Boolean>>> broadcastIntervalEnds = ctx.broadcast(barcodeEndTrees);
 
         final JavaRDD<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> linksWithEnoughOverlappers = barcodeIntervalsWithoutReads
@@ -101,18 +120,17 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 .repartitionAndSortWithinPartitions(
                         new ByContigPartitioner(broadcastContigNameMap.getValue().size())
                 )
-                .mapPartitions((iter) -> findLinksWithEnoughOverlappers(expectedGapLength, broadcastIntervalEnds, iter));
+                .mapPartitions((iter) -> findLinksWithEnoughOverlappers(expectedGapLength, iter, broadcastIntervalEnds.getValue()));
 
         final List<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> collectedLinks = linksWithEnoughOverlappers.collect();
         writeEvidenceLinks(collectedLinks, out, contigNames, barcodeNames);
     }
 
-    private Iterator<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> findLinksWithEnoughOverlappers(final int expectedGapLength,
-                                                                                                                                     final Broadcast<Map<Integer, SVIntervalTree<Boolean>>> broadcastIntervalEnds,
-                                                                                                                                     final Iterator<Tuple2<SVInterval, Integer>> moleculeIterator) {
+    protected static Iterator<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> findLinksWithEnoughOverlappers(final int expectedGapLength,
+                                                                                                                                     final Iterator<Tuple2<SVInterval, Integer>> moleculeIterator,
+                                                                                                                                     final Map<Integer, SVIntervalTree<Boolean>> intervalEnds) {
         final PairedStrandedIntervalTree<Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> results = new PairedStrandedIntervalTree<>();
-        final PairedStrandedIntervalTree<Integer> clusteredLinks = new PairedStrandedIntervalTree<>();
-        final Map<Integer, SVIntervalTree<Boolean>> intervalEnds = broadcastIntervalEnds.getValue();
+        final PairedStrandedIntervalTree<Integer> unclusteredLinks = new PairedStrandedIntervalTree<>();
         while (moleculeIterator.hasNext()) {
             final Tuple2<SVInterval, Integer> nextMolecule = moleculeIterator.next();
             final Integer moleculeBarcode = nextMolecule._2;
@@ -126,68 +144,13 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     moleculeInterval.getEnd(),
                     moleculeInterval.getEnd() + expectedGapLength);
 
-            final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapScanIterator = clusteredLinks.iterator();
-            while (overlapScanIterator.hasNext()) {
-                final Tuple2<PairedStrandedIntervals, Integer> matchingLink = overlapScanIterator.next();
-                final Integer linkBarcode = matchingLink._2();
-
-                if (!matchingLink._1().getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
-                    break;
-                }
-
-                Set<Integer> overlapperBarcodes = new HashSet<>();
-                overlapperBarcodes.add(linkBarcode);
-                int overlappers = 0;
-                final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapIterator = clusteredLinks.overlappers(matchingLink._1());
-                while (overlapIterator.hasNext()) {
-                    final Tuple2<PairedStrandedIntervals, Integer> overlappingLink = overlapIterator.next();
-                    if (! overlappingLink._1().getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
-                        break;
-                    }
-                    final Integer overlapperBarcode = overlappingLink._2();
-                    if (!overlapperBarcode.equals(linkBarcode)) {
-                        overlapperBarcodes.add(overlapperBarcode);
-                        overlappers++;
-                    }
-                }
-                if (overlappers > 3) {
-                    final PairedStrandedIntervals newGoodPairedStrandedIntervals = matchingLink._1;
-                    PairedStrandedIntervals newLink = new PairedStrandedIntervals(
-                            newGoodPairedStrandedIntervals.getLeft(),
-                            newGoodPairedStrandedIntervals.getRight());
-                    final Set<Integer> newOverlapperBarcodes = new HashSet<>(overlapperBarcodes);
-                    final boolean leftStrand = matchingLink._1.getLeft().getStrand();
-                    int leftEventCutoff = leftStrand ? matchingLink._1().getLeft().getInterval().getStart() : matchingLink._1().getLeft().getInterval().getEnd();
-                    final boolean rightStrand = matchingLink._1.getRight().getStrand();
-                    int rightEventCutoff = rightStrand ? matchingLink._1().getRight().getInterval().getStart() : matchingLink._1().getRight().getInterval().getEnd();
-
-                    boolean maybeMoreOverlappers = true;
-                    while(maybeMoreOverlappers) {
-                        final Iterator<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> previousOverlappers =
-                                results.overlappers(newLink);
-                        if (!previousOverlappers.hasNext()) {
-                            maybeMoreOverlappers = false;
-                        } else {
-                            // todo: maybe slop here?
-                            final Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> previousOverlapper = previousOverlappers.next();
-                            newLink = new PairedStrandedIntervals(
-                                    new StrandedInterval(newLink.getLeft().getInterval().join(
-                                            previousOverlapper._1().getLeft().getInterval()
-                                    ), newLink.getLeft().getStrand()),
-                                    new StrandedInterval(newLink.getRight().getInterval().join(
-                                            previousOverlapper._1().getRight().getInterval()
-                                    ), newLink.getRight().getStrand()));
-                            newOverlapperBarcodes.addAll(previousOverlapper._2()._1());
-                            leftEventCutoff = leftStrand ? Math.max(leftEventCutoff, previousOverlapper._2()._2()._1()) : Math.min(leftEventCutoff, previousOverlapper._2()._2()._1());
-                            rightEventCutoff = rightStrand ? Math.max(rightEventCutoff, previousOverlapper._2()._2()._2()) : Math.min(rightEventCutoff, previousOverlapper._2()._2()._2());
-                            previousOverlappers.remove();
-                        }
-                    }
-                    results.put(newGoodPairedStrandedIntervals, new Tuple2<>(newOverlapperBarcodes, new Tuple2<>(leftEventCutoff, rightEventCutoff)));
-                }
+            if (moleculeLeftEndInterval.getStart() == 158919072) {
+                System.err.println("foo");
             }
 
-            final Iterator<Tuple2<PairedStrandedIntervals, Integer>> cleanupIterator = clusteredLinks.iterator();
+            addClusteredLinksToResults(results, unclusteredLinks, moleculeLeftEndInterval);
+
+            final Iterator<Tuple2<PairedStrandedIntervals, Integer>> cleanupIterator = unclusteredLinks.iterator();
             while (cleanupIterator.hasNext()) {
                 final Tuple2<PairedStrandedIntervals, Integer> link = cleanupIterator.next();
 
@@ -195,7 +158,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     break;
                 }
 
-                final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapIterator = clusteredLinks.overlappers(link._1());
+                final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapIterator = unclusteredLinks.overlappers(link._1());
                 while (overlapIterator.hasNext()) {
                     final Tuple2<PairedStrandedIntervals, Integer> overlapper = overlapIterator.next();
                     if (!overlapper._1().getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
@@ -214,12 +177,12 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 if (moleculeStart != (entry.getInterval().getEnd()) &&
                         moleculeEnd != (entry.getInterval().getStart())) {
                     if (moleculeLeftEndInterval.isUpstreamOf(endInterval)) {
-                        clusteredLinks.put(new PairedStrandedIntervals(
+                        unclusteredLinks.put(new PairedStrandedIntervals(
                                 new StrandedInterval(moleculeLeftEndInterval, false),
                                 new StrandedInterval(endInterval, entry.getValue())), moleculeBarcode);
                     }
                     if (moleculeRightEndInterval.isUpstreamOf(endInterval)) {
-                        clusteredLinks.put(new PairedStrandedIntervals(
+                        unclusteredLinks.put(new PairedStrandedIntervals(
                                 new StrandedInterval(moleculeRightEndInterval, true),
                                 new StrandedInterval(endInterval, entry.getValue())), moleculeBarcode);
                     }
@@ -228,7 +191,76 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             });
 
         }
+        addClusteredLinksToResults(results, unclusteredLinks, null);
         return results.iterator();
+    }
+
+    private static void addClusteredLinksToResults(final PairedStrandedIntervalTree<Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> results,
+                                                   final PairedStrandedIntervalTree<Integer> unclusteredLinks,
+                                                   final SVInterval moleculeLeftEndInterval) {
+        final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapScanIterator = unclusteredLinks.iterator();
+        while (overlapScanIterator.hasNext()) {
+            final Tuple2<PairedStrandedIntervals, Integer> matchingLink = overlapScanIterator.next();
+            final Integer linkBarcode = matchingLink._2();
+
+            if (moleculeLeftEndInterval != null && !matchingLink._1().getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
+                break;
+            }
+
+            Set<Integer> overlapperBarcodes = new HashSet<>();
+            overlapperBarcodes.add(linkBarcode);
+            int overlappers = 0;
+            final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapIterator = unclusteredLinks.overlappers(matchingLink._1());
+            while (overlapIterator.hasNext()) {
+                final Tuple2<PairedStrandedIntervals, Integer> overlappingLink = overlapIterator.next();
+                if (overlappingLink._1().equals(matchingLink._1) && overlappingLink._2().equals(matchingLink._2())) {
+                    continue;
+                }
+                if (moleculeLeftEndInterval != null && ! overlappingLink._1().getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
+                    break;
+                }
+                final Integer overlapperBarcode = overlappingLink._2();
+                if (!overlapperBarcode.equals(linkBarcode)) {
+                    overlapperBarcodes.add(overlapperBarcode);
+                    overlappers++;
+                }
+            }
+            if (overlappers > 0) {
+                final PairedStrandedIntervals linkToAdd = matchingLink._1;
+                PairedStrandedIntervals newLink = new PairedStrandedIntervals(
+                        linkToAdd.getLeft(),
+                        linkToAdd.getRight());
+                final Set<Integer> newOverlapperBarcodes = new HashSet<>(overlapperBarcodes);
+                final boolean leftStrand = matchingLink._1.getLeft().getStrand();
+                int leftEventCutoff = leftStrand ? matchingLink._1().getLeft().getInterval().getStart() : matchingLink._1().getLeft().getInterval().getEnd();
+                final boolean rightStrand = matchingLink._1.getRight().getStrand();
+                int rightEventCutoff = rightStrand ? matchingLink._1().getRight().getInterval().getStart() : matchingLink._1().getRight().getInterval().getEnd();
+
+                boolean maybeMoreOverlappers = true;
+                while(maybeMoreOverlappers) {
+                    final Iterator<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> previousOverlappers =
+                            results.overlappers(newLink);
+                    if (!previousOverlappers.hasNext()) {
+                        maybeMoreOverlappers = false;
+                    } else {
+                        // todo: maybe slop here?
+                        final Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> previousOverlapper = previousOverlappers.next();
+                        newLink = new PairedStrandedIntervals(
+                                new StrandedInterval(newLink.getLeft().getInterval().join(
+                                        previousOverlapper._1().getLeft().getInterval()
+                                ), newLink.getLeft().getStrand()),
+                                new StrandedInterval(newLink.getRight().getInterval().join(
+                                        previousOverlapper._1().getRight().getInterval()
+                                ), newLink.getRight().getStrand()));
+                        newOverlapperBarcodes.addAll(previousOverlapper._2()._1());
+                        leftEventCutoff = leftStrand ? Math.max(leftEventCutoff, previousOverlapper._2()._2()._1()) : Math.min(leftEventCutoff, previousOverlapper._2()._2()._1());
+                        rightEventCutoff = rightStrand ? Math.max(rightEventCutoff, previousOverlapper._2()._2()._2()) : Math.min(rightEventCutoff, previousOverlapper._2()._2()._2());
+                        previousOverlappers.remove();
+                    }
+                }
+                results.put(newLink, new Tuple2<>(newOverlapperBarcodes, new Tuple2<>(leftEventCutoff, rightEventCutoff)));
+            }
+        }
     }
 
     private static void writeEvidenceLinks(final List<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> targetLinks,
