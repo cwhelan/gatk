@@ -41,6 +41,12 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     @Argument(doc = "input linked read file", shortName = "input-linked-reads", fullName = "input-linked-reads")
     public File inputLinkedReads = null;
 
+    @Argument(doc = "gap bandwidth", shortName = "gap-bandwidth", fullName = "gap-bandwidth")
+    public int gapBandwith = 1000;
+
+    @Argument(doc = "minimum gap cluster size", shortName = "min-gap-cluster-size", fullName = "min-gap-cluster-size")
+    public int minGapClusterSize = 5;
+
     @Override
     public boolean requiresReference() {
         return true;
@@ -113,14 +119,14 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         final JavaPairRDD<StrandedInterval, LinkedList<Integer>> cachedGaps = outlierGapsAtQueryPoints.cache();
 
         //cachedGaps.saveAsTextFile("foo1");
+        final int gapBandwidthFinal = gapBandwith;
+        final int minGapClusterSizeFinal = minGapClusterSize;
+
         final JavaPairRDD<StrandedInterval, Tuple2<Integer, Integer>> clustersAtQueryPoints = cachedGaps.flatMapToPair(kv -> {
             final StrandedInterval queryPoint = kv._1();
             final List<Integer> gapList = kv._2();
             final int[] gaps = gapList.stream().mapToInt(i -> i).toArray();
             Arrays.sort(gaps);
-
-            final int bandwidth = 1000;
-            final int minClusterSize = 5;
 
             List<Tuple2<StrandedInterval, Tuple2<Integer, Integer>>> clusters = new ArrayList<>();
             int currentClusterStart = 0;
@@ -128,10 +134,10 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
             int gapCount = 0;
             for (int i = 0; i < gaps.length; i++) {
                 final int gap = gaps[i];
-                final int gapBandwidthStart = gap - bandwidth;
-                final int gapBandwidthEnd = gap + bandwidth;
+                final int gapBandwidthStart = gap - gapBandwidthFinal;
+                final int gapBandwidthEnd = gap + gapBandwidthFinal;
                 if (gapBandwidthStart > currentClusterEnd) {
-                    if (gapCount >= minClusterSize) {
+                    if (gapCount >= minGapClusterSizeFinal) {
                         clusters.add(new Tuple2<>(queryPoint, new Tuple2<>(currentClusterStart, currentClusterEnd)));
                     }
                     currentClusterStart = gapBandwidthStart;
@@ -142,7 +148,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
                     gapCount = gapCount + 1;
                 }
             }
-            if (gapCount >= minClusterSize) {
+            if (gapCount >= minGapClusterSizeFinal) {
                 clusters.add(new Tuple2<>(queryPoint, new Tuple2<>(currentClusterStart, currentClusterEnd)));
             }
 
