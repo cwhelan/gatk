@@ -177,14 +177,18 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 if (moleculeStart != (entry.getInterval().getEnd()) &&
                         moleculeEnd != (entry.getInterval().getStart())) {
                     if (moleculeLeftEndInterval.isUpstreamOf(endInterval)) {
-                        unclusteredLinks.put(new PairedStrandedIntervals(
+                        final PairedStrandedIntervals leftEndPair = new PairedStrandedIntervals(
                                 new StrandedInterval(moleculeLeftEndInterval, false),
-                                new StrandedInterval(endInterval, entry.getValue())), moleculeBarcode);
+                                new StrandedInterval(endInterval, entry.getValue()));
+                        System.err.println(toBedpeString(leftEndPair));
+                        unclusteredLinks.put(leftEndPair, moleculeBarcode);
                     }
                     if (moleculeRightEndInterval.isUpstreamOf(endInterval)) {
-                        unclusteredLinks.put(new PairedStrandedIntervals(
+                        final PairedStrandedIntervals rightEndPair = new PairedStrandedIntervals(
                                 new StrandedInterval(moleculeRightEndInterval, true),
-                                new StrandedInterval(endInterval, entry.getValue())), moleculeBarcode);
+                                new StrandedInterval(endInterval, entry.getValue()));
+                        unclusteredLinks.put(rightEndPair, moleculeBarcode);
+                        System.err.println(toBedpeString(rightEndPair));
                     }
                 }
 
@@ -282,6 +286,26 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 throw new GATKException("Can't write target links to "+ targetLinkFile, ioe);
             }
         }
+    }
+
+    private static String toBedpeString(final PairedStrandedIntervals pair) {
+        final SVInterval sourceInterval = pair.getLeft().getInterval();
+        final SVInterval targetInterval = pair.getRight().getInterval();
+
+        final boolean leftStrand = pair.getLeft().getStrand();
+        final int leftStart = sourceInterval.getStart() - 1;
+        final int leftEnd = sourceInterval.getEnd();
+
+        final boolean rightStrand = pair.getRight().getStrand();
+        final int rightStart = targetInterval.getStart() - 1;
+        final int rightEnd = targetInterval.getEnd();
+
+        return sourceInterval.getContig() + "\t" + leftStart + "\t" + leftEnd +
+                "\t" + targetInterval.getContig() + "\t" + rightStart + "\t" + rightEnd +
+                "\t"  + sourceInterval.getContig() + "_" + leftStart + "_" + leftEnd + "_" +
+                targetInterval.getContig() + "_" + rightStart + "_" + rightEnd + "_" +
+                (leftStrand ? "P" : "M") + "_" + (rightStrand ? "P" : "M") + "\t1" +
+                "\t" + (leftStrand ? "+" : "-") + "\t" + (rightStrand ? "+" : "-");
     }
 
     public static String toBedpeString(Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> entry, final String[] contigNames, final String[] barcodeNames) {
