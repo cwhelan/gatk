@@ -20,7 +20,7 @@ public class FindMoleculeGapsSparkUnitTest {
         readInfos.add(new ReadInfo(1, 2610, 2620, true, -1));
         readInfos.add(new ReadInfo(1, 2800, 2810, true, -1));
         Tuple2<SVInterval, List<ReadInfo>> moleculeInfo = new Tuple2<>(moleculeInterval, readInfos);
-        List<Tuple2<StrandedInterval, Integer>> gaps = FindMoleculeGapsSpark.getInterestingGaps(moleculeInfo, 500);
+        List<Tuple2<StrandedInterval, Integer>> gaps = FindMoleculeGapsSpark.getInterestingGaps(moleculeInfo, 500, 1000);
 
         Assert.assertEquals( gaps.size(), 2);
         Assert.assertEquals( gaps.get(0)._1(), new StrandedInterval(new SVInterval(1, 1000, 2000), true));
@@ -48,7 +48,7 @@ public class FindMoleculeGapsSparkUnitTest {
         final List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> splitMoleculesForBarcode = FindMoleculeGapsSpark.splitMoleculesForBarcode("ACTG",
                 new SVInterval(1, 3500, 7350),
                 reads,
-                gapTree);
+                gapTree, 1000);
 
         Assert.assertEquals(splitMoleculesForBarcode.size(), 2);
         final Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>> firstMol = splitMoleculesForBarcode.get(0);

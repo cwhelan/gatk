@@ -1,6 +1,7 @@
 package org.broadinstitute.hellbender.tools.spark.linkedreads;
 
 import com.netflix.servo.util.VisibleForTesting;
+import org.apache.commons.math3.stat.inference.ChiSquareTest;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.spark.api.java.JavaPairRDD;
@@ -41,11 +42,8 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     @Argument(doc = "input linked read file", shortName = "input-linked-reads", fullName = "input-linked-reads")
     public File inputLinkedReads = null;
 
-    @Argument(doc = "gap bandwidth", shortName = "gap-bandwidth", fullName = "gap-bandwidth")
-    public int gapBandwith = 1000;
-
-    @Argument(doc = "minimum gap cluster size", shortName = "min-gap-cluster-size", fullName = "min-gap-cluster-size")
-    public int minGapClusterSize = 5;
+    @Argument(doc = "minimum interesting gap size as a percentile of gap distribution", shortName = "min-interesting-gap-percentile", fullName = "min-interesting-gap-percentile")
+    public float minInterestingGapPercentile = .95f;
 
     @Override
     public boolean requiresReference() {
@@ -55,8 +53,13 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     @Override
     protected void runTool(final JavaSparkContext ctx) {
 
+        final int binsize = 1000;
+
         logger.info("Loading linked reads");
         final ReferenceMultiSource reference = getReference();
+
+        final long nBins = reference.getReferenceSequenceDictionary(getBestAvailableSequenceDictionary()).getReferenceLength() / binsize;
+        final double alpha = 0.05 / (nBins * 2);
 
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getReferenceSequenceDictionary());
         final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
@@ -97,63 +100,114 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         final int rightMedianDeviation = fullIntHistogram.getCDF().rightMedianDeviation(median);
         logger.info("Right median absolute deviation: " + rightMedianDeviation);
 
-        final int gapCutoff = ninetyNinethPercentile + 3 * rightMedianDeviation;
-        final JavaPairRDD<StrandedInterval, LinkedList<Integer>> outlierGapsAtQueryPoints = barcodeIntervals.flatMapToPair(p -> {
+        final int gapCutoff = fullIntHistogram.getCDF().popStat(minInterestingGapPercentile);
+        final float minInterestingGapPercentileFinal = minInterestingGapPercentile;
+        logger.info("Gap cutoff: " + gapCutoff);
+        logger.info("Alpha for chisq test: " + alpha);
+
+        final Broadcast<IntHistogram> broadcastGapHistogram = ctx.broadcast(fullIntHistogram);
+
+        final JavaPairRDD<StrandedInterval, Tuple2<Integer, LinkedList<Integer>>> outlierGapsAtQueryPoints = barcodeIntervals.flatMapToPair(p -> {
             final Tuple2<SVInterval, List<ReadInfo>> moleculeInfo = p._2();
             final List<Tuple2<StrandedInterval, Integer>> gaps =
-                    getInterestingGaps(moleculeInfo, gapCutoff);
+                    getInterestingGaps(moleculeInfo, 0, binsize);
             return gaps.iterator();
         }).aggregateByKey(null,
                 (gaps, gap) -> {
-                    if (gaps == null) gaps = new LinkedList<>();
-                    gaps.add(Math.min(gap, MAX_TRACKED_VALUE));
-                    return gaps;
+                    if (gaps == null) {
+                        LinkedList<Integer> gapList = new LinkedList<>();
+                        if (gap >= gapCutoff) {
+                            gapList.add(gap);
+                        }
+                        return new Tuple2<>(1, gapList);
+                    } else {
+                        if (gap >= gapCutoff ) {
+                            gaps._2().add(Math.min(gap, MAX_TRACKED_VALUE));
+                        }
+                        return new Tuple2<>(gaps._1() + 1, gaps._2());
+                    }
                 },
                 (gaps1, gaps2) -> {
-                    if (gaps1 == null) gaps1 = new LinkedList<>();
-                    if (gaps2 == null) gaps2 = new LinkedList<>();
-                    gaps1.addAll(gaps2);
-                    return gaps1;
+                    final LinkedList<Integer> gaps1List;
+                    final int gaps1Observations;
+                    final LinkedList<Integer> gaps2List;
+                    final int gaps2Observations;
+
+                    if (gaps1 == null) {
+                        gaps1Observations = 0;
+                        gaps1List = new LinkedList<>();
+                    } else {
+                        gaps1Observations = gaps1._1();
+                        gaps1List = gaps1._2();
+                    }
+                    if (gaps2 == null) {
+                        gaps2Observations = 0;
+                        gaps2List = new LinkedList<>();
+                    } else {
+                        gaps2Observations = gaps2._1();
+                        gaps2List = gaps2._2();
+                    }
+
+                    LinkedList<Integer> mergedGapsList = new LinkedList<>();
+                    mergedGapsList.addAll(gaps1List);
+                    mergedGapsList.addAll(gaps2List);
+                    return new Tuple2<>(gaps1Observations + gaps2Observations, mergedGapsList);
                 });
 
-        final JavaPairRDD<StrandedInterval, LinkedList<Integer>> cachedGaps = outlierGapsAtQueryPoints.cache();
-
         //cachedGaps.saveAsTextFile("foo1");
-        final int gapBandwidthFinal = gapBandwith;
-        final int minGapClusterSizeFinal = minGapClusterSize;
+        final int gapBandwidthFinal = median;
 
-        final JavaPairRDD<StrandedInterval, Tuple2<Integer, Integer>> clustersAtQueryPoints = cachedGaps.flatMapToPair(kv -> {
-            final StrandedInterval queryPoint = kv._1();
-            final List<Integer> gapList = kv._2();
-            final int[] gaps = gapList.stream().mapToInt(i -> i).toArray();
-            Arrays.sort(gaps);
+        final JavaPairRDD<StrandedInterval, Tuple2<Integer, Integer>> clustersAtQueryPoints = outlierGapsAtQueryPoints
+                .filter(kv -> {
+                    final StrandedInterval queryPoint = kv._1();
+                    final int observations = kv._2()._1();
+                    final List<Integer> longGapList = kv._2()._2();
+                    final int[] gaps = longGapList.stream().mapToInt(i -> i).toArray();
+                    Arrays.sort(gaps);
 
-            List<Tuple2<StrandedInterval, Tuple2<Integer, Integer>>> clusters = new ArrayList<>();
-            int currentClusterStart = 0;
-            int currentClusterEnd = 0;
-            int gapCount = 0;
-            for (int i = 0; i < gaps.length; i++) {
-                final int gap = gaps[i];
-                final int gapBandwidthStart = gap - gapBandwidthFinal;
-                final int gapBandwidthEnd = gap + gapBandwidthFinal;
-                if (gapBandwidthStart > currentClusterEnd) {
-                    if (gapCount >= minGapClusterSizeFinal) {
-                        clusters.add(new Tuple2<>(queryPoint, new Tuple2<>(currentClusterStart, currentClusterEnd)));
+                    final double expectedLargeGaps = observations * (1 - minInterestingGapPercentileFinal);
+
+                    final double pValue = new ChiSquareTest().chiSquareTest(new double[]{expectedLargeGaps, observations - expectedLargeGaps},
+                            new long[]{longGapList.size(), observations - longGapList.size()});
+
+                    //System.err.println("[PVAL]\t" + queryPoint + "\t" + observations + "\t" + expectedLargeGaps + "\t" + longGapList.size() + "\t" + pValue);
+                    return pValue < alpha;
+                })
+                .flatMapToPair(kv -> {
+                    final StrandedInterval queryPoint = kv._1();
+                    final List<Integer> longGapList = kv._2()._2();
+                    final int observations = kv._2()._1();
+                    final int[] gaps = longGapList.stream().mapToInt(i -> i).toArray();
+                    Arrays.sort(gaps);
+
+                    final double expectedLargeGaps = observations * (1 - minInterestingGapPercentileFinal);
+
+                    List<Tuple2<StrandedInterval, Tuple2<Integer, Integer>>> clusters = new ArrayList<>();
+                    int currentClusterStart = 0;
+                    int currentClusterEnd = 0;
+                    int clusterGapCount = 0;
+                    for (int i = 0; i < gaps.length; i++) {
+                        final int gap = gaps[i];
+                        final int gapBandwidthStart = Math.max(gapCutoff, gap - gapBandwidthFinal);
+                        final int gapBandwidthEnd = gap + gapBandwidthFinal;
+                        if (gapBandwidthStart > currentClusterEnd) {
+                            if (clusterGapCount > Math.max(2, expectedLargeGaps)) {
+                                clusters.add(new Tuple2<>(queryPoint, new Tuple2<>(currentClusterStart, currentClusterEnd)));
+                            }
+                            currentClusterStart = gapBandwidthStart;
+                            currentClusterEnd = gapBandwidthEnd;
+                            clusterGapCount = 1;
+                        } else {
+                            currentClusterEnd = gapBandwidthEnd;
+                            clusterGapCount = clusterGapCount + 1;
+                        }
                     }
-                    currentClusterStart = gapBandwidthStart;
-                    currentClusterEnd = gapBandwidthEnd;
-                    gapCount = 1;
-                } else {
-                    currentClusterEnd = gapBandwidthEnd;
-                    gapCount = gapCount + 1;
-                }
-            }
-            if (gapCount >= minGapClusterSizeFinal) {
-                clusters.add(new Tuple2<>(queryPoint, new Tuple2<>(currentClusterStart, currentClusterEnd)));
-            }
+                    if (clusterGapCount > Math.max(2, expectedLargeGaps)) {
+                            clusters.add(new Tuple2<>(queryPoint, new Tuple2<>(currentClusterStart, currentClusterEnd)));
+                    }
 
-            return clusters.iterator();
-        }).cache();
+                    return clusters.iterator();
+                }).cache();
         //clustersAtQueryPoints.saveAsTextFile("foo2");
 
         final List<Tuple2<StrandedInterval, Tuple2<Integer, Integer>>> clustersAtQueryPointsLocal = clustersAtQueryPoints.collect();
@@ -172,7 +226,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
             final SVInterval interval = kv._2()._1();
             final List<ReadInfo> reads = kv._2()._2();
 
-            final List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> results = splitMoleculesForBarcode(barcode, interval, reads, broadcastGapClusterTree.getValue());
+            final List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> results = splitMoleculesForBarcode(barcode, interval, reads, broadcastGapClusterTree.getValue(), binsize);
 
             return results.iterator();
         });
@@ -195,14 +249,17 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
 
     }
 
+    private double getExpectedFractionInRange(final IntHistogram gapHistogramValue, final int currentClusterStart, final int currentClusterEnd) {
+        final IntHistogram.CDF cdf = gapHistogramValue.getCDF();
+        return cdf.getFraction(currentClusterEnd) - cdf.getFraction(currentClusterStart);
+    }
+
     @VisibleForTesting
     static List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> splitMoleculesForBarcode(final String barcode,
-                                                                                              final SVInterval interval,
-                                                                                              final List<ReadInfo> reads,
-                                                                                              final SVIntervalTree<List<Tuple2<Boolean, Tuple2<Integer, Integer>>>> gapTree) {
+                                                                                             final SVInterval interval,
+                                                                                             final List<ReadInfo> reads,
+                                                                                             final SVIntervalTree<List<Tuple2<Boolean, Tuple2<Integer, Integer>>>> gapTree, final int binsize) {
         final List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> results = new ArrayList<>(1);
-
-        final int binsize = 1000;
 
         ReadInfo prevReadInfo = reads.get(0);
         int prevBin = prevReadInfo.getStart() - prevReadInfo.getStart() % binsize;
@@ -254,11 +311,9 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         return results;
     }
 
-    static List<Tuple2<StrandedInterval, Integer>> getInterestingGaps(final Tuple2<SVInterval, List<ReadInfo>> moleculeInfo, final int minSize) {
+    static List<Tuple2<StrandedInterval, Integer>> getInterestingGaps(final Tuple2<SVInterval, List<ReadInfo>> moleculeInfo, final int minSize, final int binsize) {
         final SVInterval moleculeInterval = moleculeInfo._1();
         final List<ReadInfo> readInfos = moleculeInfo._2();
-
-        final int binsize = 1000;
 
         final List<Tuple2<StrandedInterval, Integer>> gaps = new ArrayList<>(moleculeInterval.getLength() / binsize);
 
