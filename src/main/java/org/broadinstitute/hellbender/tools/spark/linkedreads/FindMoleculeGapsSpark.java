@@ -1,6 +1,7 @@
 package org.broadinstitute.hellbender.tools.spark.linkedreads;
 
 import com.netflix.servo.util.VisibleForTesting;
+import ngs.Read;
 import org.apache.commons.math3.stat.inference.ChiSquareTest;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -9,6 +10,7 @@ import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.broadcast.Broadcast;
 import org.broadinstitute.barclay.argparser.Argument;
+import org.broadinstitute.barclay.argparser.ArgumentCollection;
 import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.LinkedReadsProgramGroup;
@@ -44,6 +46,10 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
 
     @Argument(doc = "minimum interesting gap size as a percentile of gap distribution", shortName = "min-interesting-gap-percentile", fullName = "min-interesting-gap-percentile")
     public float minInterestingGapPercentile = .95f;
+
+    @ArgumentCollection
+    private final LinkedReadFilteringArgumentCollection linkedReadFilteringArgs
+            = new LinkedReadFilteringArgumentCollection();
 
     @Override
     public boolean requiresReference() {
@@ -231,28 +237,39 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
             return results.iterator();
         });
 
-        final JavaPairRDD<SVInterval, String> bedRecordsByBarcode = splitIntervals.mapToPair(kv -> {
-            final String barcode = kv._1();
-            final Tuple2<SVInterval, List<ReadInfo>> intervalWithReads = kv._2();
-            final SVInterval svInterval = intervalWithReads._1();
-            return new Tuple2<>(svInterval, ExtractLinkedReadsSpark.intervalTreeToBedRecord(barcode, broadcastContigNames.getValue(), svInterval, intervalWithReads._2()));
-        });
+        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> stringSVIntervalTreeJavaPairRDD = splitIntervals.combineByKey(
+                (kv) -> {
+                    final SVIntervalTree<List<ReadInfo>> tree = new SVIntervalTree<>();
+                    final SVInterval interval = kv._1();
+                    final List<ReadInfo> readList = new ArrayList<>(kv._2());
+                    tree.put(interval, readList);
+                    return tree;
+                },
+                (tree, kv) -> {
+                    final SVInterval interval = kv._1();
+                    final List<ReadInfo> readList = new ArrayList<>(kv._2());
+                    tree.put(interval, readList);
+                    return tree;
+                },
+                (tree1, tree2) -> {
+                    final Iterator<SVIntervalTree.Entry<List<ReadInfo>>> iterator = tree1.iterator();
+                    while (iterator.hasNext()) {
+                        final SVIntervalTree.Entry<List<ReadInfo>> next = iterator.next();
+                        tree2.put(next.getInterval(), next.getValue());
+                    }
+                    return tree2;
+                });
 
-        if (shardedOutput) {
-            bedRecordsByBarcode.values().saveAsTextFile(out);
-        } else {
-            final String shardedOutputDirectory = out + ".parts";
-            final int numParts = bedRecordsByBarcode.getNumPartitions();
-            bedRecordsByBarcode.sortByKey().values().saveAsTextFile(shardedOutputDirectory);
-            ExtractLinkedReadsSpark.unshardOutput(out, shardedOutputDirectory, numParts);
-        }
+        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> filteredSplitReads = ExtractLinkedReadsSpark.filterLinkedReads(linkedReadFilteringArgs.minReadCountPerMol,
+                linkedReadFilteringArgs.minMaxMapq,
+                linkedReadFilteringArgs.edgeReadMapqThreshold,
+                stringSVIntervalTreeJavaPairRDD);
+
+        ExtractLinkedReadsSpark.writeIntervalsAsBed12(broadcastContigNames,
+                filteredSplitReads, shardedOutput, out);
 
     }
 
-    private double getExpectedFractionInRange(final IntHistogram gapHistogramValue, final int currentClusterStart, final int currentClusterEnd) {
-        final IntHistogram.CDF cdf = gapHistogramValue.getCDF();
-        return cdf.getFraction(currentClusterEnd) - cdf.getFraction(currentClusterStart);
-    }
 
     @VisibleForTesting
     static List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> splitMoleculesForBarcode(final String barcode,
@@ -361,11 +378,12 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         final int numReads = Integer.valueOf(fields[9]);
         final List<Integer> sizes = Arrays.stream(fields[10].split(",")).map(Integer::valueOf).collect(Collectors.toList());
         final List<Integer> starts = Arrays.stream(fields[11].split(",")).map(Integer::valueOf).collect(Collectors.toList());
+        final List<Integer> mapqs = Arrays.stream(fields[13].split(",")).map(Integer::valueOf).collect(Collectors.toList());
         final List<ReadInfo> readInfos = new ArrayList<>(numReads);
         for (int i = 0; i < numReads; i++) {
             final ReadInfo readInfo = new ReadInfo(contigID,
                     moleculeStart + starts.get(i),
-                    moleculeStart + starts.get(i) + sizes.get(i), true, -1);
+                    moleculeStart + starts.get(i) + sizes.get(i), true, mapqs.get(i));
             readInfos.add(readInfo);
         }
 

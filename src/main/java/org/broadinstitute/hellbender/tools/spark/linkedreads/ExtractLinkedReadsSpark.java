@@ -80,14 +80,9 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
             optional = true)
     public String phaseSetIntervalsFile;
 
-    @Argument(fullName = "min-read-count-per-molecule", shortName = "min-read-count-per-molecule", doc="Minimum number of reads to call a molecule", optional=true)
-    public int minReadCountPerMol = 2;
-
-    @Argument(fullName = "edge-read-mapq-threshold", shortName = "edge-read-mapq-threshold", doc="Mapq below which to trim reads from starts and ends of molecules", optional=true)
-    public int edgeReadMapqThreshold = 30;
-
-    @Argument(fullName = "min-max-mapq", shortName = "min-max-mapq", doc="Minimum highest mapq read to create a fragment", optional=true)
-    public int minMaxMapq = 30;
+    @ArgumentCollection
+    private final LinkedReadFilteringArgumentCollection linkedReadFilteringArgs
+            = new LinkedReadFilteringArgumentCollection();
 
     @Argument(fullName = "filter-high-depth", shortName = "filter-high-depth", doc="Filter out high-depth regions as defined by high-depth-coverage-peak-factor and high-depth-coverage-factor", optional=true)
     public boolean filterHighDepth = false;
@@ -163,7 +158,13 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         final Broadcast<String[]> broadcastContigNames =  ctx.broadcast(contigNames);
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals
-            = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastContigNameMap, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold, broadcastHighDepthIntervals)
+            = getBarcodeIntervals(finalClusterSize,
+                mappedReads,
+                broadcastContigNameMap,
+                linkedReadFilteringArgs.minReadCountPerMol,
+                linkedReadFilteringArgs.minMaxMapq,
+                linkedReadFilteringArgs.edgeReadMapqThreshold,
+                broadcastHighDepthIntervals)
                 .repartition(ctx.defaultParallelism()).cache();
 
         if (barcodeFragmentCountsFile != null) {
@@ -231,7 +232,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     }
 
 
-    private static void writeIntervalsAsBed12(final Broadcast<String[]> contigNames,
+    static void writeIntervalsAsBed12(final Broadcast<String[]> contigNames,
                                               final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals,
                                               final boolean shardedOutput,
                                               final String out) {
@@ -356,10 +357,14 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                                                                                            final int edgeReadMapqThreshold, final Broadcast<SVIntervalTree<SVInterval>> broadcastHighDepthIntervals) {
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC = getClusteredReadIntervalsByTag(finalClusterSize, mappedReads, broadcastContigNameMap, "BX", broadcastHighDepthIntervals);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlappersRemovedClusteredReads = overlapperFilter(readsClusteredByBC, finalClusterSize);
+        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> filteredLinkedReads = filterLinkedReads(minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold, overlappersRemovedClusteredReads);
+        return filteredLinkedReads;
+    }
+
+    static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> filterLinkedReads(final int minReadCountPerMol, final int minMaxMapq, final int edgeReadMapqThreshold, final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlappersRemovedClusteredReads) {
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> edgefilteredClusteredReads = edgeFilterFragments(overlappersRemovedClusteredReads, edgeReadMapqThreshold);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFragments = minMoleculeCountFilterFragments(edgefilteredClusteredReads, minReadCountPerMol);
-        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> maxMapqFilteredFragments = minMaxMapqFilterFragments(minMoleculeCountFragments, minMaxMapq);
-        return maxMapqFilteredFragments;
+        return minMaxMapqFilterFragments(minMoleculeCountFragments, minMaxMapq);
     }
 
     private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlapperFilter(final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC,
@@ -414,7 +419,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         return tree;
     }
 
-    private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFilterFragments(final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> clusteredReads, final int minReadCountPerMol) {
+    static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFilterFragments(final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> clusteredReads, final int minReadCountPerMol) {
         if (minReadCountPerMol > 0) {
             final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> filteredIntervalsByKey = clusteredReads
                     .mapValues(intervalTree -> {
@@ -700,6 +705,8 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getStart() - interval.getStart())).collect(Collectors.joining(",")));
         builder.append("\t");
         builder.append(reads == null ? "." : reads.stream().mapToInt(ReadInfo::getMapq).max().orElse(-1));
+        builder.append("\t");
+        builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getMapq())).collect(Collectors.joining(",")));
         return builder.toString();
     }
 
