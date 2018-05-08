@@ -1,7 +1,7 @@
 package org.broadinstitute.hellbender.tools.spark.linkedreads;
 
 import com.netflix.servo.util.VisibleForTesting;
-import ngs.Read;
+import htsjdk.tribble.Feature;
 import org.apache.commons.math3.stat.inference.ChiSquareTest;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -14,8 +14,10 @@ import org.broadinstitute.barclay.argparser.ArgumentCollection;
 import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.LinkedReadsProgramGroup;
+import org.broadinstitute.hellbender.engine.FeatureDataSource;
 import org.broadinstitute.hellbender.engine.datasources.ReferenceMultiSource;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
+import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.*;
 import org.broadinstitute.hellbender.tools.spark.utils.IntHistogram;
@@ -47,6 +49,9 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     @Argument(doc = "minimum interesting gap size as a percentile of gap distribution", shortName = "min-interesting-gap-percentile", fullName = "min-interesting-gap-percentile")
     public float minInterestingGapPercentile = .95f;
 
+    @Argument(doc = "high-depth regions file", shortName = "high-depth-regions", fullName = "high-depth-regions", optional = true)
+    public String highDepthRegionsFile;
+
     @ArgumentCollection
     private final LinkedReadFilteringArgumentCollection linkedReadFilteringArgs
             = new LinkedReadFilteringArgumentCollection();
@@ -70,8 +75,24 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getReferenceSequenceDictionary());
         final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
 
+        final SVIntervalTree<Integer> regionsToIgnore = new SVIntervalTree<>();
+        int intervalIndex = 0;
+        if (highDepthRegionsFile != null) {
+            try ( final FeatureDataSource<Feature> dataSource = new FeatureDataSource<>(highDepthRegionsFile, null, 0, null) ) {
+                for (final Feature feature : dataSource) {
+                    final Integer contigID = contigNameToIdMap.get(feature.getContig());
+                    if ( contigID == null ) {
+                        throw new UserException(highDepthRegionsFile + " contains a contig name not present in the BAM header: " + feature.getContig());
+                    }
+                    final SVInterval featureInterval = new SVInterval(contigID, feature.getStart(), feature.getEnd());
+                    regionsToIgnore.put(featureInterval, ++intervalIndex);
+                }
+            }
+        }
+
         final Broadcast<Map<String, Integer>> broadcastContigNameMap = ctx.broadcast(contigNameToIdMap);
         final Broadcast<String[]> broadcastContigNames =  ctx.broadcast(contigNames);
+        final Broadcast<SVIntervalTree<Integer>> broadcastRegionsToIgnore = ctx.broadcast(regionsToIgnore);
 
         final JavaPairRDD<String, Tuple2<SVInterval, List<ReadInfo>>> barcodeIntervals;
         barcodeIntervals = parseBarcodeIntervals(ctx, broadcastContigNameMap, inputLinkedReads).cache();
@@ -111,12 +132,10 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         logger.info("Gap cutoff: " + gapCutoff);
         logger.info("Alpha for chisq test: " + alpha);
 
-        final Broadcast<IntHistogram> broadcastGapHistogram = ctx.broadcast(fullIntHistogram);
-
         final JavaPairRDD<StrandedInterval, Tuple2<Integer, LinkedList<Integer>>> outlierGapsAtQueryPoints = barcodeIntervals.flatMapToPair(p -> {
             final Tuple2<SVInterval, List<ReadInfo>> moleculeInfo = p._2();
             final List<Tuple2<StrandedInterval, Integer>> gaps =
-                    getInterestingGaps(moleculeInfo, 0, binsize);
+                    getInterestingGaps(moleculeInfo, 0, binsize, broadcastRegionsToIgnore.getValue());
             return gaps.iterator();
         }).aggregateByKey(null,
                 (gaps, gap) -> {
@@ -328,7 +347,10 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         return results;
     }
 
-    static List<Tuple2<StrandedInterval, Integer>> getInterestingGaps(final Tuple2<SVInterval, List<ReadInfo>> moleculeInfo, final int minSize, final int binsize) {
+    static List<Tuple2<StrandedInterval, Integer>> getInterestingGaps(final Tuple2<SVInterval, List<ReadInfo>> moleculeInfo,
+                                                                      final int minSize,
+                                                                      final int binsize,
+                                                                      final SVIntervalTree<Integer> regionsToIgnore) {
         final SVInterval moleculeInterval = moleculeInfo._1();
         final List<ReadInfo> readInfos = moleculeInfo._2();
 
@@ -341,13 +363,15 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
             final int bin = readInfo.getStart() - readInfo.getStart() % binsize;
             if (bin != prevBin) {
                 final int gapSize = readInfo.getStart() - prevReadInfo.getStart();
-
                 if (gapSize >= minSize) {
-                    final StrandedInterval startStrandedInterval = new StrandedInterval(new SVInterval(readInfo.contig, prevBin, prevBin + binsize), true);
-                    final StrandedInterval endStrandedInterval = new StrandedInterval(new SVInterval(readInfo.contig, bin, bin + binsize), false);
+                    final SVInterval gapInterval = new SVInterval(prevReadInfo.contig, prevReadInfo.getStart(), readInfo.getStart());
+                    if (!regionsToIgnore.hasOverlapper(gapInterval)) {
+                        final StrandedInterval startStrandedInterval = new StrandedInterval(new SVInterval(readInfo.contig, prevBin, prevBin + binsize), true);
+                        final StrandedInterval endStrandedInterval = new StrandedInterval(new SVInterval(readInfo.contig, bin, bin + binsize), false);
 
-                    gaps.add(new Tuple2<>(startStrandedInterval, gapSize));
-                    gaps.add(new Tuple2<>(endStrandedInterval, gapSize));
+                        gaps.add(new Tuple2<>(startStrandedInterval, gapSize));
+                        gaps.add(new Tuple2<>(endStrandedInterval, gapSize));
+                    }
                 }
             }
             prevReadInfo = readInfo;

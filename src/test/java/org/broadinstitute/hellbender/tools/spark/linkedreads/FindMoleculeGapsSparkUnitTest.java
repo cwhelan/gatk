@@ -20,7 +20,7 @@ public class FindMoleculeGapsSparkUnitTest {
         readInfos.add(new ReadInfo(1, 2610, 2620, true, -1));
         readInfos.add(new ReadInfo(1, 2800, 2810, true, -1));
         Tuple2<SVInterval, List<ReadInfo>> moleculeInfo = new Tuple2<>(moleculeInterval, readInfos);
-        List<Tuple2<StrandedInterval, Integer>> gaps = FindMoleculeGapsSpark.getInterestingGaps(moleculeInfo, 500, 1000);
+        List<Tuple2<StrandedInterval, Integer>> gaps = FindMoleculeGapsSpark.getInterestingGaps(moleculeInfo, 500, 1000, new SVIntervalTree<>());
 
         Assert.assertEquals( gaps.size(), 2);
         Assert.assertEquals( gaps.get(0)._1(), new StrandedInterval(new SVInterval(1, 1000, 2000), true));
