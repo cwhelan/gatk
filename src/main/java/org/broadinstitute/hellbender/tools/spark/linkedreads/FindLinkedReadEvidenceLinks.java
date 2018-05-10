@@ -55,7 +55,10 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
     public File barcodeWhitelist = null;
 
     @Argument(doc = "expected gap length percentile", shortName = "gap-percentile", fullName = "gap-percentile")
-    public float gapPercentile = 0.5f;
+    public float gapPercentile = 0.995f;
+
+    @Argument(doc = "min barcode support", shortName = "min-barcode-support", fullName = "min-barcode-support")
+    public int minBarcodeSupport = 3;
 
     @Override
     public boolean requiresReference() {
@@ -66,8 +69,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
     protected void runTool(final JavaSparkContext ctx) {
 
         logger.info("Loading linked reads");
-        final ReferenceMultiSource reference = getReference();
-
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getReferenceSequenceDictionary());
         final String[] contigNames = ReadMetadata.buildIDToNameArray(contigNameToIdMap);
 
@@ -84,12 +85,18 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
         final IntHistogram fullIntHistogram = getGapSizeHistogram(barcodeIntervalsWithReads);
 
-        logger.info("Median gap size: " + fullIntHistogram.getCDF().median());
+        final int median = fullIntHistogram.getCDF().median();
+        logger.info("Median gap size: " + median);
         logger.info("90th: " + fullIntHistogram.getCDF().popStat(0.90f));
         logger.info("95th: " + fullIntHistogram.getCDF().popStat(0.95f));
         logger.info("99th: " + fullIntHistogram.getCDF().popStat(0.99f));
+        logger.info("99.5th: " + fullIntHistogram.getCDF().popStat(0.995f));
+
+        final int rightMad = fullIntHistogram.getCDF().rightMedianDeviation(median);
+        logger.info("Right MAD: " + rightMad);
 
         final int expectedGapLength = fullIntHistogram.getCDF().popStat(gapPercentile);
+        logger.info("Expected GAP length: " + expectedGapLength);
 
         final JavaPairRDD<Integer, SVInterval> barcodeIntervalsWithoutReads = barcodeIntervalsWithReads.mapValues(Tuple2::_1);
 
@@ -127,7 +134,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         iter,
                         broadcastIntervalEnds.getValue(),
                         broadcastBarcodeNames.getValue(),
-                        2));
+                        minBarcodeSupport));
 
         final List<Tuple2<PairedStrandedIntervals, ClusteredLinkInfo>> collectedLinks = linksWithEnoughOverlappers.collect();
         writeEvidenceLinks(collectedLinks, out, contigNames, barcodeNames);
@@ -223,6 +230,19 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         }
     }
 
+    static class LinkStartComparator implements Comparator<Tuple2<PairedStrandedIntervals, Integer>> {
+
+        @Override
+        public int compare(final Tuple2<PairedStrandedIntervals, Integer> o1, final Tuple2<PairedStrandedIntervals, Integer> o2) {
+            final int contigComparison = Integer.compare(o1._1().getLeft().getInterval().getContig(), o2._1().getLeft().getInterval().getContig());
+            if (contigComparison != 0) {
+                return contigComparison;
+            } else {
+                return Integer.compare(o1._1().getLeft().getInterval().getStart(), o2._1().getLeft().getInterval().getStart());
+            }
+        }
+    }
+
     protected static Iterator<Tuple2<PairedStrandedIntervals, ClusteredLinkInfo>> findLinksWithEnoughOverlappers(final int expectedGapLength,
                                                                                                                  final Iterator<Tuple2<SVInterval, Integer>> moleculeIterator,
                                                                                                                  final Map<Integer, SVIntervalTree<Boolean>> intervalEnds,
@@ -231,6 +251,9 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final PairedStrandedIntervalTree<UnclusteredLinkInfo> unclusteredLinks = new PairedStrandedIntervalTree<>();
         final PairedStrandedIntervalTree<ClusteredLinkInfo> clusteredLinks = new PairedStrandedIntervalTree<>();
         final PairedStrandedIntervalTree<ClusteredLinkInfo> outputCliques = new PairedStrandedIntervalTree<>();
+
+        final PriorityQueue<Tuple2<PairedStrandedIntervals,Integer>> rightEndIntervalQueue =
+                new PriorityQueue<>(new LinkStartComparator());
 
         while (moleculeIterator.hasNext()) {
             final Tuple2<SVInterval, Integer> nextMolecule = moleculeIterator.next();
@@ -245,70 +268,19 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     moleculeInterval.getEnd(),
                     moleculeInterval.getEnd() + expectedGapLength);
 
-            if (barcodeNames[moleculeBarcode].equals("CTCTTAAAGAGACTTA-1")) {
-                System.err.println("foo");
-            }
-
-//            final Iterator<Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo>> unclusteredLinkIterator = unclusteredLinks.iterator();
-//            while (unclusteredLinkIterator.hasNext()) {
-//                Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo> nextUnclusteredLink = unclusteredLinkIterator.next();
-//                final PairedStrandedIntervals linkIntervals = nextUnclusteredLink._1();
-//                if (linkIntervals.getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
-//                    nextUnclusteredLink._2().setEmittable(true);
-//                }
-//            }
-
-
-            // addClusteredLinksToResults(results, unclusteredLinks, moleculeLeftEndInterval);
-
-//            final Iterator<Tuple2<PairedStrandedIntervals, Integer>> cleanupIterator = unclusteredLinks.iterator();
-//            while (cleanupIterator.hasNext()) {
-//                final Tuple2<PairedStrandedIntervals, Integer> link = cleanupIterator.next();
-//
-//                if (! link._1().getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
-//                    break;
-//                }
-//
-//                final Iterator<Tuple2<PairedStrandedIntervals, Integer>> overlapIterator = unclusteredLinks.overlappers(link._1(), false);
-//                boolean overlapperOverlapsCurrentInterval = false;
-//                while (overlapIterator.hasNext()) {
-//                    final Tuple2<PairedStrandedIntervals, Integer> overlapper = overlapIterator.next();
-//                    if (!overlapper._1().getLeft().getInterval().isDisjointFrom(moleculeLeftEndInterval)) {
-//                        overlapperOverlapsCurrentInterval = true;
-//                        break;
-//                    }
-//                }
-//
-//                if (! overlapperOverlapsCurrentInterval) {
-//                    cleanupIterator.remove();
-//                }
-//            }
-
             final int moleculeStart = moleculeInterval.getStart();
             final int moleculeEnd = moleculeInterval.getEnd();
-//            intervalEnds.get(moleculeBarcode).forEach(entry ->
-//                addUnclusteredLinks(barcodeNames,
-//                        unclusteredLinks,
-//                        moleculeBarcode,
-//                        moleculeLeftEndInterval,
-//                        moleculeRightEndInterval,
-//                        moleculeStart,
-//                        moleculeEnd,
-//                        entry));
 
-            final PriorityQueue<PairedStrandedIntervals> rightEndIntervalQueue =
-                    new PriorityQueue<>(Comparator.comparingInt(psi -> ((PairedStrandedIntervals) psi).getLeft().getInterval().getContig())
-                        .thenComparingInt(psi -> ((PairedStrandedIntervals) psi).getLeft().getInterval().getStart()));
 
             intervalEnds.get(moleculeBarcode).forEach(entry -> {
                 final SVInterval endInterval = entry.getInterval();
 
                 while (! rightEndIntervalQueue.isEmpty() &&
-                        rightEndIntervalQueue.peek().getLeft().getInterval().getContig() == moleculeLeftEndInterval.getContig() &&
-                        rightEndIntervalQueue.peek().getLeft().getInterval().getStart() <= moleculeLeftEndInterval.getStart()) {
-                    final PairedStrandedIntervals rightPair = rightEndIntervalQueue.poll();
-                    System.err.println(toBedpeString(rightPair, moleculeBarcode, barcodeNames));
-                    addNewLinkAndCollectCliques(unclusteredLinks, moleculeBarcode, rightPair, clusteredLinks, outputCliques, minSupport);
+                        rightEndIntervalQueue.peek()._1().getLeft().getInterval().getContig() == moleculeLeftEndInterval.getContig() &&
+                        rightEndIntervalQueue.peek()._1().getLeft().getInterval().getStart() <= moleculeLeftEndInterval.getStart()) {
+                    final Tuple2<PairedStrandedIntervals, Integer> rightPair = rightEndIntervalQueue.poll();
+
+                    addNewLinkAndCollectCliques(unclusteredLinks, rightPair._2(), rightPair._1(), clusteredLinks, outputCliques, minSupport);
                 }
 
                 if (moleculeStart != (entry.getInterval().getEnd()) &&
@@ -317,7 +289,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         final PairedStrandedIntervals leftEndPair = new PairedStrandedIntervals(
                                 new StrandedInterval(moleculeLeftEndInterval, false),
                                 new StrandedInterval(endInterval, entry.getValue()));
-                        System.err.println(toBedpeString(leftEndPair, moleculeBarcode, barcodeNames));
                         addNewLinkAndCollectCliques(unclusteredLinks, moleculeBarcode, leftEndPair, clusteredLinks, outputCliques, minSupport);
                     }
                     // todo: add the right ends to a queue, pop them off before adding the next left end
@@ -325,13 +296,21 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         final PairedStrandedIntervals rightEndPair = new PairedStrandedIntervals(
                                 new StrandedInterval(moleculeRightEndInterval, true),
                                 new StrandedInterval(endInterval, entry.getValue()));
-                        rightEndIntervalQueue.add(rightEndPair);
+                        rightEndIntervalQueue.add(new Tuple2<>(rightEndPair, moleculeBarcode));
                     }
                 }
 
             });
 
         }
+
+        while (! rightEndIntervalQueue.isEmpty()) {
+            final Tuple2<PairedStrandedIntervals, Integer> rightPair = rightEndIntervalQueue.poll();
+            if (rightPair != null) {
+                addNewLinkAndCollectCliques(unclusteredLinks, rightPair._2(), rightPair._1(), clusteredLinks, outputCliques, minSupport);
+            }
+        }
+
         for (Iterator<Tuple2<PairedStrandedIntervals, ClusteredLinkInfo>> iterator = clusteredLinks.iterator(); iterator.hasNext(); ) {
             final Tuple2<PairedStrandedIntervals, ClusteredLinkInfo> entry = iterator.next();
             if (entry._2().getBarcodes().size() >= minSupport) {
@@ -370,16 +349,19 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         while (clustersThatAgreeWithNewLink.hasNext()) {
             Tuple2<PairedStrandedIntervals, ClusteredLinkInfo> clusterThatAgreesWithNewLink = clustersThatAgreeWithNewLink.next();
 
-            boolean allAdjacentLinksAgreeWithCluster = true;
-            final Iterator<Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo>> linksThatAgreeWithNewLink = unclusteredLinks.overlappers(newLink);
-            while (linksThatAgreeWithNewLink.hasNext()) {
-                Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo> linkThatAgreesWithNewLink = linksThatAgreeWithNewLink.next();
-                if (!linkThatAgreesWithNewLink._1().overlaps(clusterThatAgreesWithNewLink._1())) {
-                    allAdjacentLinksAgreeWithCluster = false;
+            boolean allClusterLinksAgreeWithNewLink = true;
+            final Iterator<Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo>> linksThatAgreeWithCluster = unclusteredLinks.overlappers(clusterThatAgreesWithNewLink._1());
+            while (linksThatAgreeWithCluster.hasNext()) {
+                Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo> linkThatAgreesWithNewLink = linksThatAgreeWithCluster.next();
+                if (! clusterThatAgreesWithNewLink._2().getBarcodes().contains(linkThatAgreesWithNewLink._2.barcode)) {
+                    continue;
+                }
+                if (!linkThatAgreesWithNewLink._1().overlaps(newLink)) {
+                    allClusterLinksAgreeWithNewLink = false;
                 }
             }
 
-            if (allAdjacentLinksAgreeWithCluster) {
+            if (allClusterLinksAgreeWithNewLink) {
                 // add new link to cluster
                 final PairedStrandedIntervals updatedClusterLink =
                         new PairedStrandedIntervals(
@@ -396,32 +378,27 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             } else {
                 // create a new cluster with just the intersection
                 final boolean leftStrand = newLink.getLeft().getStrand();
-                final int leftContig = newLink.getLeft().getInterval().getContig();
-                int leftStart = -1;
-                int leftEnd = Integer.MAX_VALUE;
                 final boolean rightStrand = newLink.getRight().getStrand();
-                final int rightContig = newLink.getRight().getInterval().getContig();
-                int rightStart = -1;
-                int rightEnd = Integer.MAX_VALUE;
+                SVInterval leftInterval = newLink.getLeft().getInterval();
+                SVInterval rightInterval = newLink.getRight().getInterval();
                 final Set<Integer> barcodes = new HashSet<>();
-                final Iterator<Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo>> linksThatAgreeWithNewLink2 = unclusteredLinks.overlappers(newLink);
+                final Iterator<Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo>> linksThatAgreeWithNewLink2 = unclusteredLinks.overlappers(clusterThatAgreesWithNewLink._1());
                 while (linksThatAgreeWithNewLink2.hasNext()) {
-                    final Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo> linkThatAgreesWithNewLink = linksThatAgreeWithNewLink.next();
-                    if (linkThatAgreesWithNewLink._1().overlaps(clusterThatAgreesWithNewLink._1())) {
-                        leftStart = Math.max(leftStart, linkThatAgreesWithNewLink._1.getLeft().getInterval().getStart());
-                        leftEnd = Math.min(leftEnd, linkThatAgreesWithNewLink._1.getLeft().getInterval().getEnd());
-                        rightStart = Math.max(rightStart, linkThatAgreesWithNewLink._1.getRight().getInterval().getStart());
-                        rightEnd = Math.min(rightEnd, linkThatAgreesWithNewLink._1.getRight().getInterval().getEnd());
+                    final Tuple2<PairedStrandedIntervals, UnclusteredLinkInfo> linkThatAgreesWithNewLink = linksThatAgreeWithNewLink2.next();
+                    if (! clusterThatAgreesWithNewLink._2().getBarcodes().contains(linkThatAgreesWithNewLink._2.barcode)) {
+                        continue;
+                    }
+                    if (linkThatAgreesWithNewLink._1().overlaps(newLink)) {
+
+                        leftInterval = leftInterval.intersect(linkThatAgreesWithNewLink._1().getLeft().getInterval());
+                        rightInterval = rightInterval.intersect(linkThatAgreesWithNewLink._1().getRight().getInterval());
                         barcodes.add(linkThatAgreesWithNewLink._2.getBarcode());
                     }
                 }
-                leftStart = Math.max(leftStart, newLink.getLeft().getInterval().getStart());
-                leftEnd = Math.min(leftEnd, newLink.getLeft().getInterval().getEnd());
-                rightStart = Math.max(rightStart, newLink.getRight().getInterval().getStart());
-                rightEnd = Math.min(rightEnd, newLink.getRight().getInterval().getEnd());
+                barcodes.add(moleculeBarcode);
                 final PairedStrandedIntervals newClusteredLink = new PairedStrandedIntervals(
-                        new StrandedInterval(new SVInterval(leftContig, leftStart, leftEnd), leftStrand),
-                        new StrandedInterval(new SVInterval(rightContig, rightStart, rightEnd), rightStrand));
+                        new StrandedInterval(leftInterval, leftStrand),
+                        new StrandedInterval(rightInterval, rightStrand));
                 final ClusteredLinkInfo newClusteredLinkInfo = new ClusteredLinkInfo(barcodes);
                 updatedClusters.add(new Tuple2<>(newClusteredLink, newClusteredLinkInfo));
             }
@@ -494,7 +471,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 final PairedStrandedIntervals leftEndPair = new PairedStrandedIntervals(
                         new StrandedInterval(moleculeLeftEndInterval, false),
                         new StrandedInterval(endInterval, entry.getValue()));
-                System.err.println(toBedpeString(leftEndPair, moleculeBarcode, barcodeNames));
                 unclusteredLinks.put(leftEndPair, new UnclusteredLinkInfo(moleculeBarcode, false));
             }
             if (moleculeRightEndInterval.isUpstreamOf(endInterval)) {
@@ -502,7 +478,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         new StrandedInterval(moleculeRightEndInterval, true),
                         new StrandedInterval(endInterval, entry.getValue()));
                 unclusteredLinks.put(rightEndPair, new UnclusteredLinkInfo(moleculeBarcode, false));
-                System.err.println(toBedpeString(rightEndPair, moleculeBarcode, barcodeNames));
             }
         }
     }
