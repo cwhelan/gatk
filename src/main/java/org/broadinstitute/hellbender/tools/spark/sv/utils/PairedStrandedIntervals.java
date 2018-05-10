@@ -21,6 +21,13 @@ public final class PairedStrandedIntervals {
         return right;
     }
 
+    public boolean overlaps (PairedStrandedIntervals other) {
+        return this.getLeft().getStrand() == other.getLeft().getStrand() &&
+                this.getLeft().getInterval().overlaps(other.getLeft().getInterval()) &&
+                this.getRight().getStrand() == other.getRight().getStrand() &&
+                this.getRight().getInterval().overlaps(other.getRight().getInterval());
+    }
+
     @Override
     public boolean equals(final Object o) {
         if (this == o) return true;

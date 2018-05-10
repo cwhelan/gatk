@@ -9,7 +9,6 @@ import scala.Tuple2;
 
 import java.util.Collections;
 import java.util.Iterator;
-import java.util.stream.Collectors;
 
 @DefaultSerializer(PairedStrandedIntervalTree.Serializer.class)
 public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStrandedIntervals, V>> {
@@ -51,9 +50,13 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
         private SVIntervalTree.Entry<Tuple2<Boolean, V>> rightEntry;
 
         private final PairedStrandedIntervals query;
+        private final boolean checkStrands;
 
-        public PairedStrandedIntervalTreeOverlapperIterator(PairedStrandedIntervalTree<V> tree, PairedStrandedIntervals query) {
+        public PairedStrandedIntervalTreeOverlapperIterator(final PairedStrandedIntervalTree<V> tree,
+                                                            final PairedStrandedIntervals query,
+                                                            final boolean checkStrands) {
             this.query = query;
+            this.checkStrands = checkStrands;
             leftOverlappers = tree.leftEnds.overlappers(query.getLeft().getInterval());
         }
 
@@ -63,13 +66,13 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
 
             while (leftOverlappers.hasNext()) {
                 leftEntry = leftOverlappers.next();
-                if (! leftEntry.getValue()._1() == query.getLeft().getStrand()) {
+                if (checkStrands && ! leftEntry.getValue()._1() == query.getLeft().getStrand()) {
                     continue;
                 }
                 rightOverlappers = leftEntry.getValue()._2().overlappers(query.getRight().getInterval());
                 while (rightOverlappers.hasNext()) {
                     rightEntry = rightOverlappers.next();
-                    if (! rightEntry.getValue()._1() == query.getRight().getStrand()) {
+                    if (checkStrands && ! rightEntry.getValue()._1() == query.getRight().getStrand()) {
                         continue;
                     }
                     return;
@@ -106,7 +109,11 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
     }
 
     public Iterator<Tuple2<PairedStrandedIntervals,V>> overlappers(PairedStrandedIntervals pair) {
-        return new PairedStrandedIntervalTreeOverlapperIterator(this, pair);
+        return new PairedStrandedIntervalTreeOverlapperIterator(this, pair, true);
+    }
+
+    public Iterator<Tuple2<PairedStrandedIntervals,V>> overlappers(PairedStrandedIntervals pair, boolean checkStrands) {
+        return new PairedStrandedIntervalTreeOverlapperIterator(this, pair, checkStrands);
     }
 
     public final class PairedStrandedIntervalTreeIterator implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
