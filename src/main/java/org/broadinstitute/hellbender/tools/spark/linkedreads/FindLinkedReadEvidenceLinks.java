@@ -675,7 +675,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final JavaPairRDD<Integer, SVIntervalTree<Boolean>> filteredTrees =
                 barcodeTrees.filter(pair -> pair._2().size() > 1);
 
-        return filteredTrees.collectAsMap();
+        return new HashMap<>(filteredTrees.collectAsMap());
     }
 
     private IntHistogram getGapSizeHistogram(final JavaPairRDD<Integer, Tuple2<SVInterval, List<ReadInfo>>> barcodeIntervalsWithReads) {
