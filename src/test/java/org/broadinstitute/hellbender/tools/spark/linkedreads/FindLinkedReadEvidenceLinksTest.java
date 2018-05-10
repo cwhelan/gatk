@@ -11,8 +11,6 @@ import scala.Tuple2;
 
 import java.util.*;
 
-import static org.testng.Assert.*;
-
 public class FindLinkedReadEvidenceLinksTest extends GATKBaseTest {
 
     @Test
@@ -43,24 +41,24 @@ public class FindLinkedReadEvidenceLinksTest extends GATKBaseTest {
         molecule2EndTree.put(new SVInterval(0, 55600, 56600), true);
         intervalEnds.put(2, molecule2EndTree);
 
-        final Iterator<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> linksWithEnoughOverlappers =
-                FindLinkedReadEvidenceLinks.findLinksWithEnoughOverlappers(1000, moleculeList.iterator(), intervalEnds);
+        final Iterator<Tuple2<PairedStrandedIntervals, FindLinkedReadEvidenceLinks.ClusteredLinkInfo>> linksWithEnoughOverlappers =
+                FindLinkedReadEvidenceLinks.findLinksWithEnoughOverlappers(1000, moleculeList.iterator(),
+                        intervalEnds, new String[] { "A", "B", "C", "D" }, 2);
 
-        List<Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>>> expectedLinks = new ArrayList<>();
+        List<Tuple2<PairedStrandedIntervals, FindLinkedReadEvidenceLinks.ClusteredLinkInfo>> expectedLinks = new ArrayList<>();
         expectedLinks.add(
                 new Tuple2<>(
                         new PairedStrandedIntervals(
-                                new StrandedInterval(new SVInterval(0, 9000, 10400), false),
-                                new StrandedInterval(new SVInterval( 0, 49100, 50800), false)),
-                        new Tuple2<>(
-                            new HashSet<>(Arrays.asList(1, 2)),
-                            new Tuple2<>(10000, 50100)
+                                new StrandedInterval(new SVInterval(0, 9400, 10000), false),
+                                new StrandedInterval(new SVInterval( 0, 49800, 50100), false)),
+                        new FindLinkedReadEvidenceLinks.ClusteredLinkInfo(
+                            new HashSet<>(Arrays.asList(1, 2))
                         )
                 ));
 
         int actualLinks = 0;
         while (linksWithEnoughOverlappers.hasNext()) {
-            Tuple2<PairedStrandedIntervals, Tuple2<Set<Integer>, Tuple2<Integer, Integer>>> link = linksWithEnoughOverlappers.next();
+            Tuple2<PairedStrandedIntervals, FindLinkedReadEvidenceLinks.ClusteredLinkInfo> link = linksWithEnoughOverlappers.next();
             Assert.assertEquals(link, expectedLinks.get(actualLinks));
             actualLinks++;
         }
