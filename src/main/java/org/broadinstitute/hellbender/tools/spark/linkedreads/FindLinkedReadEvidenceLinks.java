@@ -20,6 +20,7 @@ import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.*;
+import org.broadinstitute.hellbender.tools.spark.utils.HopscotchMap;
 import org.broadinstitute.hellbender.tools.spark.utils.IntHistogram;
 import org.broadinstitute.hellbender.utils.Utils;
 import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
@@ -74,7 +75,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final Map<String, Integer> barcodeToIdMap = buildBarcodeToIDMap(barcodeWhitelist);
         final Broadcast<Map<String, Integer>> broadcastBarcodeIdMap = ctx.broadcast(barcodeToIdMap);
         final String[] barcodeNames = ReadMetadata.buildIDToNameArray(barcodeToIdMap);
-        final Broadcast<String[]> broadcastBarcodeNames = ctx.broadcast(barcodeNames);
 
         final Broadcast<Map<String, Integer>> broadcastContigNameMap = ctx.broadcast(contigNameToIdMap);
 
@@ -132,7 +132,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 .mapPartitions((iter) -> findLinksWithEnoughOverlappers(expectedGapLength,
                         iter,
                         broadcastIntervalEnds.getValue(),
-                        broadcastBarcodeNames.getValue(),
                         minBarcodeSupport));
 
         final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> collectedLinks = linksWithEnoughOverlappers.collect();
@@ -223,7 +222,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
     protected static Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> findLinksWithEnoughOverlappers(final int expectedGapLength,
                                                                                                                  final Iterator<Tuple2<SVInterval, Integer>> moleculeIterator,
                                                                                                                  final Map<Integer, SVIntervalTree<Boolean>> intervalEnds,
-                                                                                                                 final String[] barcodeNames,
                                                                                                                  final int minSupport) {
         final PairedStrandedIntervalTree<Integer> unclusteredLinks = new PairedStrandedIntervalTree<>();
         final PairedStrandedIntervalTree<Set<Integer>> clusteredLinks = new PairedStrandedIntervalTree<>();
@@ -327,6 +325,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             Tuple2<PairedStrandedIntervals, Set<Integer>> clusterThatAgreesWithNewLink = clustersThatAgreeWithNewLink.next();
 
             boolean allClusterLinksAgreeWithNewLink = true;
+            int intersectionCount = 0;
             final Iterator<Tuple2<PairedStrandedIntervals, Integer>> linksThatAgreeWithCluster = unclusteredLinks.overlappers(clusterThatAgreesWithNewLink._1());
             while (linksThatAgreeWithCluster.hasNext()) {
                 Tuple2<PairedStrandedIntervals, Integer> linkThatAgreesWithNewLink = linksThatAgreeWithCluster.next();
@@ -336,6 +335,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 if (!linkThatAgreesWithNewLink._1().overlaps(newLink)) {
                     allClusterLinksAgreeWithNewLink = false;
                 }
+                intersectionCount++;
             }
 
             if (allClusterLinksAgreeWithNewLink) {
@@ -359,7 +359,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 final boolean rightStrand = newLink.getRight().getStrand();
                 SVInterval leftInterval = newLink.getLeft().getInterval();
                 SVInterval rightInterval = newLink.getRight().getInterval();
-                final Set<Integer> barcodes = new HashSet<>();
+                final Set<Integer> barcodes = new HashSet<>(intersectionCount);
                 final Iterator<Tuple2<PairedStrandedIntervals, Integer>> linksThatAgreeWithNewLink2 = unclusteredLinks.overlappers(clusterThatAgreesWithNewLink._1());
                 while (linksThatAgreeWithNewLink2.hasNext()) {
                     final Tuple2<PairedStrandedIntervals, Integer> linkThatAgreesWithNewLink = linksThatAgreeWithNewLink2.next();
@@ -367,7 +367,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                         continue;
                     }
                     if (linkThatAgreesWithNewLink._1().overlaps(newLink)) {
-
                         leftInterval = leftInterval.intersect(linkThatAgreesWithNewLink._1().getLeft().getInterval());
                         rightInterval = rightInterval.intersect(linkThatAgreesWithNewLink._1().getRight().getInterval());
                         barcodes.add(linkThatAgreesWithNewLink._2());
@@ -390,7 +389,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             updatedClusters.add(new Tuple2<>(newClusteredLink, barcodes));
         }
 
-        final Set<Integer> updatedClustersToDelete = new HashSet<>(updatedClusters.size());
+        final Set<Integer> updatedClustersToDelete = new HashSet<>(updatedClusters.size() / 2);
         for (int i = 0; i < updatedClusters.size(); i++) {
             final Tuple2<PairedStrandedIntervals, Set<Integer>> updatedCluster1 = updatedClusters.get(i);
             for (int j = i + 1; j < updatedClusters.size(); j++) {
@@ -595,6 +594,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
     }
 
     private Map<String, Integer> buildBarcodeToIDMap(final File barcodeWhitelist) {
+        //final HopscotchMap<Map.Entry<String, Integer>, String, Integer> barcodeMap2 = new HopscotchMap<String, Integer, Map.Entry<String, Integer>>();
         final Map<String, Integer> barcodeMap = new HashMap<>(4000000);
         try(FileInputStream inputStream = new FileInputStream(barcodeWhitelist.getPath())) {
             final BufferedLineReader reader = new BufferedLineReader(inputStream);
@@ -602,6 +602,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             int index = 0;
             while ( line != null ) {
                 barcodeMap.put(line + "-1", index);
+                //barcodeMap2.add(new Map.Entry<String, Integer>())
                 line = reader.readLine();
                 index = index + 1;
             }

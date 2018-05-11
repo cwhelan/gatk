@@ -53,7 +53,7 @@ public class FindLinkedReadEvidenceLinksTest extends GATKBaseTest {
 
         final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> linksWithEnoughOverlappers =
                 FindLinkedReadEvidenceLinks.findLinksWithEnoughOverlappers(1000, moleculeList.iterator(),
-                        intervalEnds, new String[] { "A", "B", "C", "D" }, 2);
+                        intervalEnds, 2);
 
         List<Tuple2<PairedStrandedIntervals, FindLinkedReadEvidenceLinks.ClusteredLinkInfo>> expectedLinks = new ArrayList<>();
         expectedLinks.add(
