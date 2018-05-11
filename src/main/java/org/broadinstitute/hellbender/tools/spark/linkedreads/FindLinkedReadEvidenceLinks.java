@@ -320,7 +320,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         }
 
         final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> clustersThatAgreeWithNewLink = clusteredLinks.overlappers(newLink);
-        final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> updatedClusters = new ArrayList<>();
+        final PairedStrandedIntervalTree<Set<Integer>> updatedClusters = new PairedStrandedIntervalTree<>();
         while (clustersThatAgreeWithNewLink.hasNext()) {
             Tuple2<PairedStrandedIntervals, Set<Integer>> clusterThatAgreesWithNewLink = clustersThatAgreeWithNewLink.next();
 
@@ -351,7 +351,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 barcodes.add(moleculeBarcode);
                 barcodes.addAll(clusterThatAgreesWithNewLink._2());
                 //final ClusteredLinkInfo newClusteredLinkInfo = new ClusteredLinkInfo(barcodes);
-                updatedClusters.add(new Tuple2<>(updatedClusterLink, barcodes));
+                updatedClusters.put(updatedClusterLink, barcodes);
                 clustersThatAgreeWithNewLink.remove();
             } else {
                 // create a new cluster with just the intersection
@@ -376,7 +376,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 final PairedStrandedIntervals newClusteredLink = new PairedStrandedIntervals(
                         new StrandedInterval(leftInterval, leftStrand),
                         new StrandedInterval(rightInterval, rightStrand));
-                updatedClusters.add(new Tuple2<>(newClusteredLink, barcodes));
+                updatedClusters.put(newClusteredLink, barcodes);
             }
         }
 
@@ -386,31 +386,19 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     newLink.getLeft(),
                     newLink.getRight());
             final Set<Integer> barcodes = Collections.singleton(moleculeBarcode);
-            updatedClusters.add(new Tuple2<>(newClusteredLink, barcodes));
+            updatedClusters.put(newClusteredLink, barcodes);
         }
 
-        final Set<Integer> updatedClustersToDelete = new HashSet<>(updatedClusters.size() / 2);
-        for (int i = 0; i < updatedClusters.size(); i++) {
-            final Tuple2<PairedStrandedIntervals, Set<Integer>> updatedCluster1 = updatedClusters.get(i);
-            for (int j = i + 1; j < updatedClusters.size(); j++) {
-                final Tuple2<PairedStrandedIntervals, Set<Integer>> updatedCluster2 = updatedClusters.get(j);
-                if (updatedCluster1._1().overlaps(updatedCluster2._1())) {
-                    if (updatedCluster1._2().containsAll(updatedCluster2._2())) {
-                        updatedClustersToDelete.add(j);
-                    } else if (updatedCluster2._2().containsAll(updatedCluster1._2())) {
-                        updatedClustersToDelete.add(i);
-                    }
+        for (Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> deletionCandidateIterator = updatedClusters.iterator(); deletionCandidateIterator.hasNext(); ) {
+            final Tuple2<PairedStrandedIntervals, Set<Integer>> deletionCandidate = deletionCandidateIterator.next();
+            final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> overlappers = updatedClusters.overlappers(deletionCandidate._1());
+            while (overlappers.hasNext()) {
+                final Tuple2<PairedStrandedIntervals, Set<Integer>> overlapper = overlappers.next();
+                if (!overlapper.equals(deletionCandidate) && overlapper._2().containsAll(deletionCandidate._2)) {
+                    deletionCandidateIterator.remove();
+                    break;
                 }
             }
-        }
-
-        int i = 0;
-        for (final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> updatedClusterDeletionIter = updatedClusters.iterator(); updatedClusterDeletionIter.hasNext(); ) {
-            final Tuple2<PairedStrandedIntervals, Set<Integer>> updatedCluster = updatedClusterDeletionIter.next();
-            if (updatedClustersToDelete.contains(i)) {
-                updatedClusterDeletionIter.remove();
-            }
-            i = i + 1;
         }
 
         final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> updatedClusterAdditionIter = updatedClusters.iterator();
