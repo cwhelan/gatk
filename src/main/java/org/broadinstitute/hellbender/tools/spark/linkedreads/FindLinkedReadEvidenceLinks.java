@@ -241,9 +241,9 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             final Tuple2<SVInterval, Integer> nextMolecule = moleculeIterator.next();
             final Integer moleculeBarcode = nextMolecule._2();
             final SVInterval moleculeInterval = nextMolecule._1();
-            if (moleculeInterval.getStart() / 1000000 != currentBlock) {
-                System.err.println("progress: " + moleculeInterval);
-                currentBlock = moleculeInterval.getStart() / 1000000;
+            if (moleculeInterval.getStart() / 100000 != currentBlock) {
+                System.err.println("progress: " + moleculeInterval + "\t" );
+                currentBlock = moleculeInterval.getStart() / 100000;
             }
             final SVInterval moleculeLeftEndInterval = new SVInterval(
                     moleculeInterval.getContig(),
@@ -338,6 +338,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
             boolean allClusterLinksAgreeWithNewLink = true;
             int intersectionCount = 0;
+            final List<Tuple2<PairedStrandedIntervals, Integer>> intersection = new ArrayList<>(clusterThatAgreesWithNewLink._2().size());
             final Iterator<Tuple2<PairedStrandedIntervals, Integer>> linksThatAgreeWithCluster = unclusteredLinks.overlappers(clusterThatAgreesWithNewLink._1());
             while (linksThatAgreeWithCluster.hasNext()) {
                 Tuple2<PairedStrandedIntervals, Integer> linkThatAgreesWithNewLink = linksThatAgreeWithCluster.next();
@@ -347,6 +348,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 if (!linkThatAgreesWithNewLink._1().overlaps(newLink)) {
                     allClusterLinksAgreeWithNewLink = false;
                 }
+                intersection.add(linkThatAgreesWithNewLink);
                 intersectionCount++;
             }
 
@@ -374,19 +376,26 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 final boolean rightStrand = newLink.getRight().getStrand();
                 SVInterval leftInterval = newLink.getLeft().getInterval();
                 SVInterval rightInterval = newLink.getRight().getInterval();
-                final Set<Integer> barcodes = new HashSet<>(intersectionCount);
-                final Iterator<Tuple2<PairedStrandedIntervals, Integer>> linksThatAgreeWithNewLink2 = unclusteredLinks.overlappers(clusterThatAgreesWithNewLink._1());
-                while (linksThatAgreeWithNewLink2.hasNext()) {
-                    final Tuple2<PairedStrandedIntervals, Integer> linkThatAgreesWithNewLink = linksThatAgreeWithNewLink2.next();
-                    if (! clusterThatAgreesWithNewLink._2().contains(linkThatAgreesWithNewLink._2())) {
-                        continue;
-                    }
-                    if (linkThatAgreesWithNewLink._1().overlaps(newLink)) {
-                        leftInterval = leftInterval.intersect(linkThatAgreesWithNewLink._1().getLeft().getInterval());
-                        rightInterval = rightInterval.intersect(linkThatAgreesWithNewLink._1().getRight().getInterval());
-                        barcodes.add(linkThatAgreesWithNewLink._2());
-                    }
+                final Set<Integer> barcodes = new HashSet<>( (int) ((intersectionCount + 1) * 1.25));
+                final Iterator<Tuple2<PairedStrandedIntervals, Integer>> intersectionIterator = intersection.iterator();
+                while (intersectionIterator.hasNext()) {
+                    final Tuple2<PairedStrandedIntervals, Integer> next = intersectionIterator.next();
+                    leftInterval = leftInterval.intersect(next._1().getLeft().getInterval());
+                    rightInterval = rightInterval.intersect(next._1().getRight().getInterval());
+                    barcodes.add(next._2());
                 }
+//                final Iterator<Tuple2<PairedStrandedIntervals, Integer>> linksThatAgreeWithNewLink2 = unclusteredLinks.overlappers(clusterThatAgreesWithNewLink._1());
+//                while (linksThatAgreeWithNewLink2.hasNext()) {
+//                    final Tuple2<PairedStrandedIntervals, Integer> linkThatAgreesWithNewLink = linksThatAgreeWithNewLink2.next();
+//                    if (! clusterThatAgreesWithNewLink._2().contains(linkThatAgreesWithNewLink._2())) {
+//                        continue;
+//                    }
+//                    if (linkThatAgreesWithNewLink._1().overlaps(newLink)) {
+//                        leftInterval = leftInterval.intersect(linkThatAgreesWithNewLink._1().getLeft().getInterval());
+//                        rightInterval = rightInterval.intersect(linkThatAgreesWithNewLink._1().getRight().getInterval());
+//                        barcodes.add(linkThatAgreesWithNewLink._2());
+//                    }
+//                }
                 barcodes.add(moleculeBarcode);
                 final PairedStrandedIntervals newClusteredLink = new PairedStrandedIntervals(
                         new StrandedInterval(leftInterval, leftStrand),
