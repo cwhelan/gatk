@@ -435,6 +435,8 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             final Tuple2<PairedStrandedIntervals, Integer> unclusteredLink = unclusteredLinkIterator.next();
             if (! clusteredLinks.overlappers(unclusteredLink._1()).hasNext()) {
                 unclusteredLinkIterator.remove();
+            } else {
+                break;
             }
         }
 
