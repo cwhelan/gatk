@@ -49,6 +49,9 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     @Argument(doc = "minimum interesting gap size as a percentile of gap distribution", shortName = "min-interesting-gap-percentile", fullName = "min-interesting-gap-percentile")
     public float minInterestingGapPercentile = .95f;
 
+    @Argument(doc = "size of bandwidth window for detecting a cluster of interesting gaps as a percentile of the gap distribution", fullName = "gap-cluster-bandwidth-percentile")
+    public float gapClusterBandwidthPercentile = .7f;
+
     @Argument(doc = "high-depth regions file", shortName = "high-depth-regions", fullName = "high-depth-regions", optional = true)
     public String highDepthRegionsFile;
 
@@ -113,7 +116,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
                 getOutlierGapsAtQueryPoints(binsize, broadcastRegionsToIgnore, barcodeIntervals, gapCutoff);
 
         //cachedGaps.saveAsTextFile("foo1");
-        final int gapBandwidthFinal = median;
+        final int gapBandwidthFinal = fullIntHistogram.getCDF().popStat(gapClusterBandwidthPercentile);
 
         final JavaPairRDD<StrandedInterval, Tuple2<Integer, Integer>> clustersAtQueryPoints = outlierGapsAtQueryPoints
                 .filter(kv -> isQueryPointAnOutlierForInterestingGaps(alpha, minInterestingGapPercentileFinal, kv))
