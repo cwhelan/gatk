@@ -209,21 +209,21 @@ public class PairedStrandedIntervalTreeTest extends GATKBaseTest {
         Iterator<Tuple2<PairedStrandedIntervals, Integer>> iterator = psiTree.iterator();
         Assert.assertTrue(iterator.hasNext());
         Tuple2<PairedStrandedIntervals, Integer> out1 = iterator.next();
-        Assert.assertEquals(out1._1(), v1);
-        Assert.assertEquals(out1._2().intValue(), 1);
+        Assert.assertEquals(v1, out1._1());
+        Assert.assertEquals(1, out1._2().intValue());
 
         Assert.assertTrue(iterator.hasNext());
         Tuple2<PairedStrandedIntervals, Integer> out2 = iterator.next();
-        Assert.assertEquals(out2._1(), v2);
-        Assert.assertEquals(out2._2().intValue(), 2);
+        Assert.assertEquals(v2, out2._1());
+        Assert.assertEquals(2, out2._2().intValue());
 
         iterator.remove();
         Assert.assertEquals(psiTree.size(), 2);
         Assert.assertTrue(iterator.hasNext());
 
         Tuple2<PairedStrandedIntervals, Integer> out3 = iterator.next();
-        Assert.assertEquals(out3._1(), v3);
-        Assert.assertEquals(out3._2().intValue(), 3);
+        Assert.assertEquals(v3, out3._1());
+        Assert.assertEquals(3, out3._2().intValue());
 
     }
 
