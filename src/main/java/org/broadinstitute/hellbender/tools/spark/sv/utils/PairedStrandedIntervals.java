@@ -2,7 +2,7 @@ package org.broadinstitute.hellbender.tools.spark.sv.utils;
 
 import org.broadinstitute.hellbender.utils.Utils;
 
-public final class PairedStrandedIntervals {
+public final class PairedStrandedIntervals implements Comparable<PairedStrandedIntervals> {
     final StrandedInterval left;
     final StrandedInterval right;
 
@@ -43,6 +43,13 @@ public final class PairedStrandedIntervals {
     public int hashCode() {
         int result = left.hashCode();
         result = 31 * result + right.hashCode();
+        return result;
+    }
+
+    @Override
+    public int compareTo( final PairedStrandedIntervals that ) {
+        int result = left.compareTo(that.left);
+        if ( result == 0 ) result = right.compareTo(that.right);
         return result;
     }
 

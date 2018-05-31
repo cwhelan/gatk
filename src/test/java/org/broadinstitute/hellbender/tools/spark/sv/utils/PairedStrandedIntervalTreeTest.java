@@ -180,7 +180,7 @@ public class PairedStrandedIntervalTreeTest extends GATKBaseTest {
         final PairedStrandedIntervals v1 =
                 new PairedStrandedIntervals(
                         new StrandedInterval(new SVInterval(1, 100, 200),
-                                true),
+                                false),
                         new StrandedInterval(new SVInterval(1, 500, 600),
                                 false));
 

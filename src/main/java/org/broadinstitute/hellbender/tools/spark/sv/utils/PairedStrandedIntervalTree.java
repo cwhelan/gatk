@@ -4,6 +4,7 @@ import com.esotericsoftware.kryo.DefaultSerializer;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
+import org.broadinstitute.hellbender.utils.Utils;
 import scala.Tuple2;
 
 import java.util.*;
@@ -11,189 +12,110 @@ import java.util.*;
 @DefaultSerializer(PairedStrandedIntervalTree.Serializer.class)
 public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStrandedIntervals, V>> {
 
-    private SVIntervalTree<List<Entry<V>>> leftEnds = new SVIntervalTree<>();
+    private final SortedMap<PairedStrandedIntervals, V> map;
+    private int maxLeftIntervalLength;
 
-    private int size = 0;
-
-    public PairedStrandedIntervalTree() {}
+    public PairedStrandedIntervalTree() {
+        map = new TreeMap<>();
+        maxLeftIntervalLength = 0;
+    }
 
     @SuppressWarnings("unchecked")
-    public PairedStrandedIntervalTree(final Kryo kryo, final Input input) {
-        leftEnds = (SVIntervalTree<List<Entry<V>>>) kryo.readClassAndObject(input);
+    public PairedStrandedIntervalTree( final Kryo kryo, final Input input ) {
+        maxLeftIntervalLength = input.readInt();
+        map = kryo.readObject(input, TreeMap.class);
+    }
+
+    private void serialize( final Kryo kryo, final Output output ) {
+        output.writeInt(maxLeftIntervalLength);
+        kryo.writeObject(output, map);
     }
 
     public V put(PairedStrandedIntervals pair, V value) {
-        final SVIntervalTree.Entry<List<Entry<V>>> leftEndEntryList = leftEnds.find(pair.getLeft().getInterval());
-
-        final List<Entry<V>> leftValues;
-        if (leftEndEntryList == null) {
-            leftValues = new ArrayList<>();
-            leftEnds.put(pair.getLeft().getInterval(), leftValues);
-        } else {
-            leftValues = leftEndEntryList.getValue();
-        }
-
-        V oldVal = null;
-
-        for (int i = 0; i < leftValues.size(); i++) {
-            Entry<V> entry = leftValues.get(i);
-            if (entry.interval.equals(pair)) {
-                oldVal = entry.value;
-                entry.value = value;
-            }
-        }
-
-
-        leftValues.add(new Entry<>(pair, value));
-        size = size + 1;
-        return oldVal;
+        final int leftIntervalLength = pair.getLeft().getInterval().getLength();
+        if ( leftIntervalLength > maxLeftIntervalLength ) maxLeftIntervalLength = leftIntervalLength;
+        return map.put(pair, value);
     }
 
     public int size() {
-        return size;
+        return map.size();
     }
 
-    public final class PairedStrandedIntervalTreeOverlapperIterator implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
-
-
-        private final PairedStrandedIntervals query;
-        private Iterator<SVIntervalTree.Entry<List<Entry<V>>>> treeIterator;
-        private Iterator<Entry<V>> listIterator;
-        private List<Entry<V>> currentList;
-        private Entry<V> current;
-        private boolean canRemove = false;
-
-        public PairedStrandedIntervalTreeOverlapperIterator(final PairedStrandedIntervalTree<V> tree,
-                                                            final PairedStrandedIntervals query) {
-
-            this.query = query;
-            treeIterator = tree.leftEnds.overlappers(query.getLeft().getInterval());
-            if (treeIterator.hasNext()) {
-                final List<Entry<V>> list = treeIterator.next().getValue();
-                currentList = list;
-                listIterator = list.iterator();
-            } else {
-                listIterator = Collections.emptyListIterator();
-            }
-        }
-
-        @Override
-        public boolean hasNext() {
-            canRemove = false;
-            advance();
-            return current != null;
-        }
-
-        private void advance() {
-            current = null;
-            while (listIterator.hasNext()) {
-                final Entry<V> next = listIterator.next();
-                if (next.interval.overlaps(query)) {
-                    current = next;
-                    return;
-                }
-            }
-
-            while (treeIterator.hasNext()) {
-                final SVIntervalTree.Entry<List<Entry<V>>> nextTreeNode = treeIterator.next();
-                currentList = nextTreeNode.getValue();
-                listIterator = currentList.iterator();
-                while (listIterator.hasNext()) {
-                    final Entry<V> next = listIterator.next();
-                    if (next.interval.overlaps(query)) {
-                        current = next;
-                        return;
-                    }
-                }
-            }
-        }
-
-        @Override
-        public Tuple2<PairedStrandedIntervals, V> next() {
-            canRemove = true;
-            return new Tuple2<>(current.interval, current.value);
-        }
-
-        @Override
-        public void remove() {
-            if (! canRemove) {
-                throw new UnsupportedOperationException("Remove can only be called on this iterator immediately after a call to next. Calling remove after hasNext is unsupported.");
-            }
-            listIterator.remove();
-            if (currentList.isEmpty()) {
-                treeIterator.remove();
-            }
-            canRemove = false;
-            size = size - 1;
-        }
-    }
-
-    public Iterator<Tuple2<PairedStrandedIntervals,V>> overlappers(PairedStrandedIntervals pair) {
-        return new PairedStrandedIntervalTreeOverlapperIterator(this, pair);
-    }
-
-    public final class PairedStrandedIntervalTreeIterator implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
-
-        private Iterator<SVIntervalTree.Entry<List<Entry<V>>>> treeIterator;
-        private Iterator<Entry<V>> listIterator;
-        private List<Entry<V>> currentList;
-
-        PairedStrandedIntervalTreeIterator(PairedStrandedIntervalTree<V> tree) {
-            treeIterator = tree.leftEnds.iterator();
-            if (treeIterator.hasNext()) {
-                currentList = treeIterator.next().getValue();
-                listIterator = currentList.iterator();
-            } else {
-                listIterator = Collections.emptyListIterator();
-            }
-        }
-
-        @Override
-        public boolean hasNext() {
-            return listIterator.hasNext() || treeIterator.hasNext();
-        }
-
-
-        @Override
-        public Tuple2<PairedStrandedIntervals, V> next() {
-            if (! listIterator.hasNext()) {
-                if (treeIterator.hasNext()) {
-                    currentList = treeIterator.next().getValue();
-                    listIterator = currentList.iterator();
-                }
-            }
-
-            final Entry<V> next = listIterator.next();
-            return new Tuple2<>(next.interval, next.value);
-        }
-
-        @Override
-        public void remove() {
-            listIterator.remove();
-            if (currentList.isEmpty()) {
-                treeIterator.remove();
-            }
-            size = size - 1;
-        }
-
+    public boolean contains( PairedStrandedIntervals pair ) {
+        return map.containsKey(pair);
     }
 
     public Iterator<Tuple2<PairedStrandedIntervals, V>> iterator() {
-        return new PairedStrandedIntervalTreeIterator(this);
+        return new CompleteIterator<>(map.entrySet().iterator());
     }
 
-    public boolean contains(PairedStrandedIntervals pair) {
-        final int leftEndIndex = leftEnds.getIndex(pair.getLeft().getInterval());
-        if (leftEndIndex == -1) return false;
-        final SVIntervalTree.Entry<List<Entry<V>>> leftEndEntry = leftEnds.findByIndex(leftEndIndex);
-        final List<Entry<V>> value = leftEndEntry.getValue();
+    public Iterator<Tuple2<PairedStrandedIntervals,V>> overlappers(PairedStrandedIntervals pair) {
+        Utils.nonNull(pair, "Pair to determine overlappers cannot be null.");
+        final StrandedInterval left = pair.getLeft();
+        final boolean strand = left.getStrand();
+        final SVInterval leftInterval = left.getInterval();
+        final int contig = leftInterval.getContig();
+        // no overlapping pair can start earlier than this
+        final int start = Math.max(0, leftInterval.getStart() - maxLeftIntervalLength);
+        final StrandedInterval zero = new StrandedInterval(new SVInterval(0,0,0), false);
+        final StrandedInterval fromInterval = new StrandedInterval(new SVInterval(contig,start,start), strand);
+        final PairedStrandedIntervals fromPair = new PairedStrandedIntervals(fromInterval, zero);
+        final int end = leftInterval.getEnd();
+        // once we get to here (or greater), we know we're done: we're at or past the end of the left query interval
+        final StrandedInterval toInterval = new StrandedInterval(new SVInterval(contig,end,end), strand);
+        final PairedStrandedIntervals toPair = new PairedStrandedIntervals(toInterval, zero);
+        return new OverlapperIterator<>(map.subMap(fromPair, toPair).entrySet().iterator(), pair);
+    }
 
-        for (int i = 0; i < value.size(); i++) {
-            if (value.get(i).interval.equals(pair)) {
-                return true;
-            }
+    private final static class CompleteIterator<V> implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
+        private final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr;
+
+        CompleteIterator( final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr ) {
+            this.mapItr = mapItr;
         }
-        return false;
+
+        @Override public boolean hasNext() { return mapItr.hasNext(); }
+        @Override public Tuple2<PairedStrandedIntervals, V> next() {
+            final Map.Entry<PairedStrandedIntervals, V> entry = mapItr.next();
+            return new Tuple2<>(entry.getKey(), entry.getValue());
+        }
+        @Override public void remove() { mapItr.remove(); }
+    }
+
+    private final static class OverlapperIterator<V> implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
+        private final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr;
+        private final PairedStrandedIntervals query;
+        private Tuple2<PairedStrandedIntervals, V> next;
+
+        OverlapperIterator( final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr,
+                                                      final PairedStrandedIntervals query ) {
+            this.mapItr = mapItr;
+            this.query = query;
+            this.next = null;
+            hasNext();
+        }
+
+        @Override public boolean hasNext() {
+            while ( next == null && mapItr.hasNext() ) {
+                final Map.Entry<PairedStrandedIntervals, V> test = mapItr.next();
+                if ( test.getKey().overlaps(query) ) {
+                    next = new Tuple2<>(test.getKey(), test.getValue());
+                }
+            }
+            return next != null;
+        }
+
+        @Override public Tuple2<PairedStrandedIntervals, V> next() {
+            if ( next == null ) throw new NoSuchElementException("iterator exhausted.");
+            final Tuple2<PairedStrandedIntervals, V> result = next;
+            next = null;
+            return result;
+        }
+
+        @Override public void remove() {
+            if ( next != null ) throw new IllegalStateException("remove without next.");
+            mapItr.remove();
+        }
     }
 
     public static final class Serializer<T> extends com.esotericsoftware.kryo.Serializer<PairedStrandedIntervalTree<T>> {
@@ -206,20 +128,5 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
         public PairedStrandedIntervalTree<T> read(final Kryo kryo, final Input input, final Class<PairedStrandedIntervalTree<T>> klass ) {
             return new PairedStrandedIntervalTree<>(kryo, input);
         }
-    }
-
-
-    static final class Entry<V> {
-        PairedStrandedIntervals interval;
-        V value;
-
-        public Entry(final PairedStrandedIntervals interval, final V value) {
-            this.interval = interval;
-            this.value = value;
-        }
-    }
-
-    private void serialize(final Kryo kryo, final Output output) {
-        kryo.writeClassAndObject(output, this);
     }
 }

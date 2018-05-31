@@ -15,7 +15,7 @@ import org.broadinstitute.hellbender.utils.Utils;
  * If false: the evidence suggests a breakpoint downstream of the interval's end coordinate
  */
 @DefaultSerializer(StrandedInterval.Serializer.class)
-public class StrandedInterval {
+public class StrandedInterval implements Comparable<StrandedInterval> {
     private static final SVInterval.Serializer intervalSerializer = new SVInterval.Serializer();
 
     final SVInterval interval;
@@ -60,6 +60,13 @@ public class StrandedInterval {
     public int hashCode() {
         int result = interval.hashCode();
         result = 31 * result + (strand ? 1 : 0);
+        return result;
+    }
+
+    @Override
+    public int compareTo( final StrandedInterval that ) {
+        int result = interval.compareTo(that.interval);
+        if ( result == 0 ) result = Boolean.compare(strand, that.strand);
         return result;
     }
 
