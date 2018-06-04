@@ -404,7 +404,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
             }
         }
 
-        if (updatedClusters.size() == 0) {
+        if (updatedClusters.isEmpty()) {
 
             final PairedStrandedIntervals newClusteredLink = new PairedStrandedIntervals(
                     newLink.getLeft(),

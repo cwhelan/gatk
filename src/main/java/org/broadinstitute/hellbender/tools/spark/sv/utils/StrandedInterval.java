@@ -45,6 +45,10 @@ public class StrandedInterval implements Comparable<StrandedInterval> {
         return strand;
     }
 
+    public SVInterval getStrandEncodedInterval() {
+        return strand ? interval : new SVInterval(~interval.getContig(), interval.getStart(), interval.getEnd());
+    }
+
     @Override
     public boolean equals(final Object o) {
         if (this == o) return true;

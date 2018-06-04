@@ -4,6 +4,7 @@ import com.esotericsoftware.kryo.DefaultSerializer;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
+import org.broadinstitute.hellbender.tools.spark.sv.utils.SVIntervalTree.Entry;
 import org.broadinstitute.hellbender.utils.Utils;
 import scala.Tuple2;
 
@@ -12,109 +13,109 @@ import java.util.*;
 @DefaultSerializer(PairedStrandedIntervalTree.Serializer.class)
 public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStrandedIntervals, V>> {
 
-    private final SortedMap<PairedStrandedIntervals, V> map;
-    private int maxLeftIntervalLength;
+    private final SVIntervalTree<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>> leftStrandEncodedTree;
 
     public PairedStrandedIntervalTree() {
-        map = new TreeMap<>();
-        maxLeftIntervalLength = 0;
+        leftStrandEncodedTree = new SVIntervalTree<>();
     }
 
     @SuppressWarnings("unchecked")
     public PairedStrandedIntervalTree( final Kryo kryo, final Input input ) {
-        maxLeftIntervalLength = input.readInt();
-        map = kryo.readObject(input, TreeMap.class);
+        leftStrandEncodedTree =
+                (SVIntervalTree<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>>)kryo.readClassAndObject(input);
     }
 
     private void serialize( final Kryo kryo, final Output output ) {
-        output.writeInt(maxLeftIntervalLength);
-        kryo.writeObject(output, map);
+        kryo.writeClassAndObject(output, leftStrandEncodedTree);
     }
 
-    public V put(PairedStrandedIntervals pair, V value) {
-        final int leftIntervalLength = pair.getLeft().getInterval().getLength();
-        if ( leftIntervalLength > maxLeftIntervalLength ) maxLeftIntervalLength = leftIntervalLength;
-        return map.put(pair, value);
+    public V put( PairedStrandedIntervals pair, V value ) {
+        final SVInterval leftStrandEncodedInterval = pair.getLeft().getStrandEncodedInterval();
+        final Entry<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>> entry =
+                leftStrandEncodedTree.find(leftStrandEncodedInterval);
+        final SVIntervalTree<Tuple2<PairedStrandedIntervals, V>> rightStrandEncodedTree;
+        if ( entry != null ) {
+            rightStrandEncodedTree = entry.getValue();
+        } else {
+            rightStrandEncodedTree = new SVIntervalTree<>();
+            leftStrandEncodedTree.put(leftStrandEncodedInterval, rightStrandEncodedTree);
+        }
+        final SVInterval rightStrandEncodedInterval = pair.getRight().getStrandEncodedInterval();
+        final Tuple2<PairedStrandedIntervals, V> oldVal =
+                rightStrandEncodedTree.put(rightStrandEncodedInterval, new Tuple2<>(pair, value));
+        return oldVal == null ? null : oldVal._2();
     }
 
-    public int size() {
-        return map.size();
-    }
+    public boolean isEmpty() { return leftStrandEncodedTree.size() == 0; }
+    public int size() { return Utils.stream(leftStrandEncodedTree).mapToInt(entry -> entry.getValue().size()).sum(); }
 
     public boolean contains( PairedStrandedIntervals pair ) {
-        return map.containsKey(pair);
+        final SVInterval leftStrandEncodedInterval = pair.getLeft().getStrandEncodedInterval();
+        final SVIntervalTree.Entry<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>> entry =
+                leftStrandEncodedTree.find(leftStrandEncodedInterval);
+        if ( entry == null ) return false;
+        final SVIntervalTree<Tuple2<PairedStrandedIntervals, V>> rightStrandEncodedTree = entry.getValue();
+        final SVInterval rightStrandEncodedInterval = pair.getRight().getStrandEncodedInterval();
+        return rightStrandEncodedTree.find(rightStrandEncodedInterval) != null;
     }
 
     public Iterator<Tuple2<PairedStrandedIntervals, V>> iterator() {
-        return new CompleteIterator<>(map.entrySet().iterator());
+        return new NestedIterator<>(leftStrandEncodedTree.iterator(), null);
     }
 
-    public Iterator<Tuple2<PairedStrandedIntervals,V>> overlappers(PairedStrandedIntervals pair) {
-        Utils.nonNull(pair, "Pair to determine overlappers cannot be null.");
-        final StrandedInterval left = pair.getLeft();
-        final boolean strand = left.getStrand();
-        final SVInterval leftInterval = left.getInterval();
-        final int contig = leftInterval.getContig();
-        // no overlapping pair can start earlier than this
-        final int start = Math.max(0, leftInterval.getStart() - maxLeftIntervalLength);
-        final StrandedInterval zero = new StrandedInterval(new SVInterval(0,0,0), false);
-        final StrandedInterval fromInterval = new StrandedInterval(new SVInterval(contig,start,start), strand);
-        final PairedStrandedIntervals fromPair = new PairedStrandedIntervals(fromInterval, zero);
-        final int end = leftInterval.getEnd();
-        // once we get to here (or greater), we know we're done: we're at or past the end of the left query interval
-        final StrandedInterval toInterval = new StrandedInterval(new SVInterval(contig,end,end), strand);
-        final PairedStrandedIntervals toPair = new PairedStrandedIntervals(toInterval, zero);
-        return new OverlapperIterator<>(map.subMap(fromPair, toPair).entrySet().iterator(), pair);
+    public Iterator<Tuple2<PairedStrandedIntervals,V>> overlappers( PairedStrandedIntervals pair ) {
+        final SVInterval leftStrandEncodedInterval = pair.getLeft().getStrandEncodedInterval();
+        final SVInterval rightStrandEncodedInterval = pair.getRight().getStrandEncodedInterval();
+        return new NestedIterator<>(leftStrandEncodedTree.overlappers(leftStrandEncodedInterval), rightStrandEncodedInterval);
     }
 
-    private final static class CompleteIterator<V> implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
-        private final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr;
+    private final static class NestedIterator<V> implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
+        private final Iterator<Entry<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>>> leftIterator;
+        private final SVInterval rightStrandEncodedInterval;
+        private SVIntervalTree<Tuple2<PairedStrandedIntervals, V>> rightTree;
+        private Iterator<Entry<Tuple2<PairedStrandedIntervals, V>>> rightIterator;
 
-        CompleteIterator( final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr ) {
-            this.mapItr = mapItr;
-        }
-
-        @Override public boolean hasNext() { return mapItr.hasNext(); }
-        @Override public Tuple2<PairedStrandedIntervals, V> next() {
-            final Map.Entry<PairedStrandedIntervals, V> entry = mapItr.next();
-            return new Tuple2<>(entry.getKey(), entry.getValue());
-        }
-        @Override public void remove() { mapItr.remove(); }
-    }
-
-    private final static class OverlapperIterator<V> implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
-        private final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr;
-        private final PairedStrandedIntervals query;
-        private Tuple2<PairedStrandedIntervals, V> next;
-
-        OverlapperIterator( final Iterator<Map.Entry<PairedStrandedIntervals, V>> mapItr,
-                                                      final PairedStrandedIntervals query ) {
-            this.mapItr = mapItr;
-            this.query = query;
-            this.next = null;
-            hasNext();
+        NestedIterator( final Iterator<Entry<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>>> leftIterator,
+                          final SVInterval rightStrandEncodedInterval ) {
+            this.leftIterator = leftIterator;
+            this.rightStrandEncodedInterval = rightStrandEncodedInterval;
+            advance();
         }
 
         @Override public boolean hasNext() {
-            while ( next == null && mapItr.hasNext() ) {
-                final Map.Entry<PairedStrandedIntervals, V> test = mapItr.next();
-                if ( test.getKey().overlaps(query) ) {
-                    next = new Tuple2<>(test.getKey(), test.getValue());
-                }
-            }
-            return next != null;
+            if ( rightIterator == null ) return false;
+            if ( !rightIterator.hasNext() ) advance();
+            return rightIterator != null;
         }
 
         @Override public Tuple2<PairedStrandedIntervals, V> next() {
-            if ( next == null ) throw new NoSuchElementException("iterator exhausted.");
-            final Tuple2<PairedStrandedIntervals, V> result = next;
-            next = null;
-            return result;
+            if ( rightIterator == null ) {
+                throw new NoSuchElementException("iterator exhausted");
+            }
+            return rightIterator.next().getValue();
         }
 
         @Override public void remove() {
-            if ( next != null ) throw new IllegalStateException("remove without next.");
-            mapItr.remove();
+            if ( rightIterator == null ) {
+                throw new IllegalStateException("remove without next");
+            }
+            rightIterator.remove();
+            if ( rightTree.size() == 0 ) leftIterator.remove();
+        }
+
+        private void advance() {
+            while ( leftIterator.hasNext() ) {
+                rightTree = leftIterator.next().getValue();
+                if ( rightStrandEncodedInterval == null ) {
+                    rightIterator = rightTree.iterator();
+                    return;
+                } else {
+                    rightIterator = rightTree.overlappers(rightStrandEncodedInterval);
+                    if ( rightIterator.hasNext() ) return;
+                }
+            }
+            rightTree = null;
+            rightIterator = null;
         }
     }
 
