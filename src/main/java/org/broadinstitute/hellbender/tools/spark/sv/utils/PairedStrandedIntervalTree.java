@@ -89,7 +89,7 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
         }
 
         @Override public Tuple2<PairedStrandedIntervals, V> next() {
-            if ( rightIterator == null ) {
+            if ( !hasNext() ) {
                 throw new NoSuchElementException("iterator exhausted");
             }
             return rightIterator.next().getValue();
