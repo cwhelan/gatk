@@ -23,11 +23,13 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
 
     @SuppressWarnings("unchecked")
     public PairedStrandedIntervalTree( final Kryo kryo, final Input input ) {
+        size = input.readInt();
         leftStrandEncodedTree =
                 (SVIntervalTree<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>>)kryo.readClassAndObject(input);
     }
 
     private void serialize( final Kryo kryo, final Output output ) {
+        output.writeInt(size);
         kryo.writeClassAndObject(output, leftStrandEncodedTree);
     }
 
