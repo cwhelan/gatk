@@ -14,9 +14,11 @@ import java.util.*;
 public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStrandedIntervals, V>> {
 
     private final SVIntervalTree<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>> leftStrandEncodedTree;
+    private int size;
 
     public PairedStrandedIntervalTree() {
         leftStrandEncodedTree = new SVIntervalTree<>();
+        size = 0;
     }
 
     @SuppressWarnings("unchecked")
@@ -43,11 +45,12 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
         final SVInterval rightStrandEncodedInterval = pair.getRight().getStrandEncodedInterval();
         final Tuple2<PairedStrandedIntervals, V> oldVal =
                 rightStrandEncodedTree.put(rightStrandEncodedInterval, new Tuple2<>(pair, value));
+        size += 1;
         return oldVal == null ? null : oldVal._2();
     }
 
     public boolean isEmpty() { return leftStrandEncodedTree.size() == 0; }
-    public int size() { return Utils.stream(leftStrandEncodedTree).mapToInt(entry -> entry.getValue().size()).sum(); }
+    public int size() { return size; }
 
     public boolean contains( PairedStrandedIntervals pair ) {
         final SVInterval leftStrandEncodedInterval = pair.getLeft().getStrandEncodedInterval();
@@ -69,7 +72,7 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
         return new NestedIterator<>(leftStrandEncodedTree.overlappers(leftStrandEncodedInterval), rightStrandEncodedInterval);
     }
 
-    private final static class NestedIterator<V> implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
+    private final class NestedIterator<V> implements Iterator<Tuple2<PairedStrandedIntervals, V>> {
         private final Iterator<Entry<SVIntervalTree<Tuple2<PairedStrandedIntervals, V>>>> leftIterator;
         private final SVInterval rightStrandEncodedInterval;
         private SVIntervalTree<Tuple2<PairedStrandedIntervals, V>> rightTree;
@@ -101,6 +104,7 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
             }
             rightIterator.remove();
             if ( rightTree.size() == 0 ) leftIterator.remove();
+            PairedStrandedIntervalTree.this.size -= 1;
         }
 
         private void advance() {
@@ -108,11 +112,10 @@ public class PairedStrandedIntervalTree<V> implements Iterable<Tuple2<PairedStra
                 rightTree = leftIterator.next().getValue();
                 if ( rightStrandEncodedInterval == null ) {
                     rightIterator = rightTree.iterator();
-                    return;
                 } else {
                     rightIterator = rightTree.overlappers(rightStrandEncodedInterval);
-                    if ( rightIterator.hasNext() ) return;
                 }
+                if ( rightIterator.hasNext() ) return;
             }
             rightTree = null;
             rightIterator = null;
