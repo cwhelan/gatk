@@ -130,6 +130,9 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
         final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> collectedLinks = linksWithEnoughOverlappers.collect();
         barcodeIntervalsWithoutReads.unpersist();
+
+
+
         writeEvidenceLinks(collectedLinks, out, contigNames, barcodeNames);
     }
 
@@ -629,7 +632,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
     private Map<Integer, SVIntervalTree<Boolean>> getIntervalEndsTrees(final int expectedGapLength,
                                                                        final JavaPairRDD<Integer, SVInterval> barcodesWithoutReadsWithIds) {
-        final JavaPairRDD<Integer, SVIntervalTree<Boolean>> barcodeTrees = barcodesWithoutReadsWithIds.aggregateByKey(
+        final JavaPairRDD<Integer, SVIntervalTree<Tuple2<SVInterval, SVInterval>>> barcodeTrees = barcodesWithoutReadsWithIds.aggregateByKey(
                 null,
                 (tree, interval) -> {
                     if (tree == null) {
@@ -639,13 +642,11 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                             interval.getContig(),
                             Math.max(0, interval.getStart() - expectedGapLength),
                             interval.getStart());
-                    tree.put(leftInterval, false);
                     final SVInterval rightInterval = new SVInterval(
                             interval.getContig(),
                             interval.getEnd(),
                             interval.getEnd() + expectedGapLength);
-                    tree.put(rightInterval, true);
-
+                    tree.put(interval, new Tuple2<>(leftInterval, rightInterval));
                     return tree;
                 },
                 (tree1, tree2) -> {
@@ -656,17 +657,45 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     if (tree2 == null) {
                         tree2 = new SVIntervalTree<>();
                     }
-                    final SVIntervalTree<Boolean> combinedTree = new SVIntervalTree<>();
+                    final SVIntervalTree<Tuple2<SVInterval, SVInterval>> combinedTree = new SVIntervalTree<>();
                     tree1.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
                     tree2.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
                     return combinedTree;
                 }
         );
 
+        final JavaPairRDD<Integer, SVIntervalTree<Boolean>> trimmedEndTrees = barcodeTrees.mapValues(tree -> {
+            final SVIntervalTree<Boolean> trimmedEndTree = new SVIntervalTree<>();
+            tree.forEach(entry -> {
+                final SVInterval leftEndInterval = entry.getValue()._1();
+                final SVInterval rightEndInterval = entry.getValue()._2();
+                final SVInterval trimmedLeftInterval = trimIntervalOverlaps(tree, leftEndInterval);
+                final SVInterval trimmedRightInterval = trimIntervalOverlaps(tree, rightEndInterval);
+                trimmedEndTree.put(trimmedLeftInterval, false);
+                trimmedEndTree.put(trimmedRightInterval, true);
+            });
+            return trimmedEndTree;
+        });
+
         final JavaPairRDD<Integer, SVIntervalTree<Boolean>> filteredTrees =
-                barcodeTrees.filter(pair -> pair._2().size() > 1);
+                trimmedEndTrees.filter(pair -> pair._2().size() > 1);
 
         return new HashMap<>(filteredTrees.collectAsMap());
+    }
+
+    private SVInterval trimIntervalOverlaps(final SVIntervalTree<Tuple2<SVInterval, SVInterval>> tree, final SVInterval endInterval) {
+        SVInterval trimmedInterval = endInterval;
+        final Iterator<SVIntervalTree.Entry<Tuple2<SVInterval, SVInterval>>> overlapperMolecules = tree.overlappers(endInterval);
+        while (overlapperMolecules.hasNext()) {
+            SVIntervalTree.Entry<Tuple2<SVInterval, SVInterval>> next = overlapperMolecules.next();
+            final SVInterval overlappingMolecule = next.getInterval();
+            if (overlappingMolecule.getStart() < trimmedInterval.getStart()) {
+                trimmedInterval = new SVInterval(trimmedInterval.getContig(), overlappingMolecule.getEnd(), trimmedInterval.getEnd());
+            } else {
+                trimmedInterval = new SVInterval(trimmedInterval.getContig(), trimmedInterval.getStart(), overlappingMolecule.getStart());
+            }
+        }
+        return trimmedInterval;
     }
 
     private IntHistogram getGapSizeHistogram(final JavaPairRDD<Integer, Tuple2<SVInterval, List<ReadInfo>>> barcodeIntervalsWithReads) {
