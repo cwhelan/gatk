@@ -24,6 +24,7 @@ import org.broadinstitute.hellbender.tools.spark.utils.IntHistogram;
 import org.broadinstitute.hellbender.utils.Utils;
 import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
 import scala.Tuple2;
+import scala.Tuple3;
 
 import java.io.*;
 import java.util.*;
@@ -131,9 +132,148 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> collectedLinks = linksWithEnoughOverlappers.collect();
         barcodeIntervalsWithoutReads.unpersist();
 
+        PairedStrandedIntervalTree<Set<Integer>> collectedLinkTree = new PairedStrandedIntervalTree<>();
+        collectedLinks.forEach(l -> collectedLinkTree.put(l._1(), l._2()));
+        final Broadcast<PairedStrandedIntervalTree<Set<Integer>>> broadcastCollectedLinks = ctx.broadcast(collectedLinkTree);
+
+        //final JavaPairRDD<Integer, Iterable<SVInterval>> intervalsByBarcode = barcodeIntervalsWithoutReads.groupByKey();
+
+        final JavaPairRDD<Integer, SVIntervalTree<Integer>> moleculeTree = barcodeIntervalsWithoutReads.aggregateByKey(
+        null,
+                (tree, interval) -> {
+                    if (tree == null) {
+                        tree = new SVIntervalTree<>();
+                    }
+                    tree.put(interval, 1);
+                    return tree;
+                },
+                (tree1, tree2) -> {
+
+                    if (tree1 == null) {
+                        tree1 = new SVIntervalTree<>();
+                    }
+                    if (tree2 == null) {
+                        tree2 = new SVIntervalTree<>();
+                    }
+                    final SVIntervalTree<Integer> combinedTree = new SVIntervalTree<>();
+                    tree1.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
+                    tree2.forEach(e -> combinedTree.put(e.getInterval(), e.getValue()));
+                    return combinedTree;
+                }
+        );
+
+//        final Map<Integer, SVIntervalTree<Integer>> moleculeTreeLocal = moleculeTree.collectAsMap();
+
+        final JavaRDD<Tuple2<PairedStrandedIntervals, Integer>> removals = moleculeTree.flatMap(pair -> {
+            final Integer barcode = pair._1();
+            final SVIntervalTree<Integer> molecules = pair._2();
+
+            final List<SVInterval> moleculeList = new ArrayList<>();
+            molecules.forEach(e -> moleculeList.add(e.getInterval()));
+
+            List<Tuple2<PairedStrandedIntervals, Integer>> barcodeRemovals = new ArrayList<>();
+
+            final PairedStrandedIntervalTree<Set<Integer>> linksToTestAgainst = broadcastCollectedLinks.getValue();
+            for (int i = 0; i < moleculeList.size(); i++) {
+                for (int j = 0; j < moleculeList.size(); j++) {
+                    final StrandedInterval left1 = new StrandedInterval(getLeftEndInterval(expectedGapLength, moleculeList.get(i)), false);
+                    final StrandedInterval left2 = new StrandedInterval(getLeftEndInterval(expectedGapLength, moleculeList.get(j)), false);
+                    final StrandedInterval right1 = new StrandedInterval(getRightEndInterval(expectedGapLength, moleculeList.get(i)), true);
+                    final StrandedInterval right2 = new StrandedInterval(getRightEndInterval(expectedGapLength, moleculeList.get(j)), true);
+
+                    final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> linksForPair = new ArrayList<>();
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(left1, right1)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(left1, right2)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(right1, left2)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(right1, right2)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(left2, left1)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(left2, right1)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(right2, left1)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+                    linksToTestAgainst.overlappers(new PairedStrandedIntervals(right2, right1)).forEachRemaining(link -> {
+                        if (link._2().contains(barcode)) {
+                            linksForPair.add(link);
+                        }
+                    });
+
+                    int maxLinkStrength = 0;
+                    int strongestLink = -1;
+                    if (linksForPair.size() > 1) {
+                        for (int k = 0; k < linksForPair.size(); k++) {
+                            final int strength = linksForPair.get(k)._2().size();
+                            if (strength > maxLinkStrength) {
+                                maxLinkStrength = strength;
+                                strongestLink = k;
+                            }
+                        }
+
+                        for (int k = 0; k < linksForPair.size(); k++) {
+                            if (k != strongestLink) {
+                                barcodeRemovals.add(new Tuple2<>(linksForPair.get(k)._1(), barcode));
+                            }
+                        }
+                    }
+
+                }
+            }
+            return barcodeRemovals.iterator();
+        });
+
+        removals.collect().forEach(removal -> {
+            final PairedStrandedIntervals link = removal._1();
+            final Integer barcode = removal._2();
+            // todo: implement find on PSIT
+            // collectedLinkTree.find(link)
+            final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> overlappers = collectedLinkTree.overlappers(link);
+            while (overlappers.hasNext()) {
+                final Tuple2<PairedStrandedIntervals, Set<Integer>> next = overlappers.next();
+                if (next._1().equals(link)) {
+                    next._2().remove(barcode);
+                    break;
+                }
+            }
+        });
 
 
-        writeEvidenceLinks(collectedLinks, out, contigNames, barcodeNames);
+        final List<Tuple2<PairedStrandedIntervals, Set<Integer>>> filteredLinks = new ArrayList<>();
+        final Iterator<Tuple2<PairedStrandedIntervals, Set<Integer>>> collectedLinkIterator = collectedLinkTree.iterator();
+        while (collectedLinkIterator.hasNext()) {
+            Tuple2<PairedStrandedIntervals, Set<Integer>> next = collectedLinkIterator.next();
+            if (next._2().size() >= minBarcodeSupport) {
+                filteredLinks.add(next);
+            }
+        }
+
+        writeEvidenceLinks(filteredLinks, out, contigNames, barcodeNames);
     }
 
     private IntHistogram getGapSizeHistogram(final JavaSparkContext ctx,
@@ -248,14 +388,8 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 System.err.println("progress: " + moleculeInterval + "\t" );
                 currentBlock = moleculeInterval.getStart() / 100000;
             }
-            final SVInterval moleculeLeftEndInterval = new SVInterval(
-                    moleculeInterval.getContig(),
-                    Math.max(0, moleculeInterval.getStart() - expectedGapLength),
-                    moleculeInterval.getStart());
-            final SVInterval moleculeRightEndInterval = new SVInterval(
-                    moleculeInterval.getContig(),
-                    moleculeInterval.getEnd(),
-                    moleculeInterval.getEnd() + expectedGapLength);
+            final SVInterval moleculeLeftEndInterval = getLeftEndInterval(expectedGapLength, moleculeInterval);
+            final SVInterval moleculeRightEndInterval = getRightEndInterval(expectedGapLength, moleculeInterval);
 
             final int moleculeStart = moleculeInterval.getStart();
             final int moleculeEnd = moleculeInterval.getEnd();
@@ -638,14 +772,8 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     if (tree == null) {
                         tree = new SVIntervalTree<>();
                     }
-                    final SVInterval leftInterval = new SVInterval(
-                            interval.getContig(),
-                            Math.max(0, interval.getStart() - expectedGapLength),
-                            interval.getStart());
-                    final SVInterval rightInterval = new SVInterval(
-                            interval.getContig(),
-                            interval.getEnd(),
-                            interval.getEnd() + expectedGapLength);
+                    final SVInterval leftInterval = getLeftEndInterval(expectedGapLength, interval);
+                    final SVInterval rightInterval = getRightEndInterval(expectedGapLength, interval);
                     tree.put(interval, new Tuple2<>(leftInterval, rightInterval));
                     return tree;
                 },
@@ -683,12 +811,27 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         return new HashMap<>(filteredTrees.collectAsMap());
     }
 
+    private static SVInterval getRightEndInterval(final int expectedGapLength, final SVInterval interval) {
+        return new SVInterval(
+                                interval.getContig(),
+                                interval.getEnd(),
+                                interval.getEnd() + expectedGapLength);
+    }
+
+    private static SVInterval getLeftEndInterval(final int expectedGapLength, final SVInterval interval) {
+        return new SVInterval(
+                                interval.getContig(),
+                                Math.max(0, interval.getStart() - expectedGapLength),
+                                interval.getStart());
+    }
+
     private SVInterval trimIntervalOverlaps(final SVIntervalTree<Tuple2<SVInterval, SVInterval>> tree, final SVInterval endInterval) {
         SVInterval trimmedInterval = endInterval;
         final Iterator<SVIntervalTree.Entry<Tuple2<SVInterval, SVInterval>>> overlapperMolecules = tree.overlappers(endInterval);
         while (overlapperMolecules.hasNext()) {
             SVIntervalTree.Entry<Tuple2<SVInterval, SVInterval>> next = overlapperMolecules.next();
             final SVInterval overlappingMolecule = next.getInterval();
+            // todo: what if the overlapping interval is contained in the end interval?
             if (overlappingMolecule.getStart() < trimmedInterval.getStart()) {
                 trimmedInterval = new SVInterval(trimmedInterval.getContig(), overlappingMolecule.getEnd(), trimmedInterval.getEnd());
             } else {
