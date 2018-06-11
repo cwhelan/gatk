@@ -55,6 +55,9 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     @Argument(doc = "high-depth regions file", shortName = "high-depth-regions", fullName = "high-depth-regions", optional = true)
     public String highDepthRegionsFile;
 
+    @Argument(doc = "bin size", fullName = "bin-size")
+    public int binSize = 1000;
+
     @ArgumentCollection
     private final LinkedReadFilteringArgumentCollection linkedReadFilteringArgs
             = new LinkedReadFilteringArgumentCollection();
@@ -67,12 +70,10 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     @Override
     protected void runTool(final JavaSparkContext ctx) {
 
-        final int binsize = 1000;
-
         logger.info("Loading linked reads");
         final ReferenceMultiSource reference = getReference();
 
-        final long nBins = reference.getReferenceSequenceDictionary(getBestAvailableSequenceDictionary()).getReferenceLength() / binsize;
+        final long nBins = reference.getReferenceSequenceDictionary(getBestAvailableSequenceDictionary()).getReferenceLength() / binSize;
         final double alpha = 0.05 / (nBins * 2);
 
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getReferenceSequenceDictionary());
@@ -113,7 +114,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         logger.info("Alpha for chisq test: " + alpha);
 
         final JavaPairRDD<StrandedInterval, Tuple2<Integer, List<Integer>>> outlierGapsAtQueryPoints =
-                getOutlierGapsAtQueryPoints(binsize, broadcastRegionsToIgnore, barcodeIntervals, gapCutoff);
+                getOutlierGapsAtQueryPoints(binSize, broadcastRegionsToIgnore, barcodeIntervals, gapCutoff);
 
         //cachedGaps.saveAsTextFile("foo1");
         final int gapBandwidthFinal = fullIntHistogram.getCDF().popStat(gapClusterBandwidthPercentile);
@@ -141,7 +142,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
             final SVInterval interval = kv._2()._1();
             final List<ReadInfo> reads = kv._2()._2();
 
-            final List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> results = splitMoleculesForBarcode(barcode, interval, reads, broadcastGapClusterTree.getValue(), binsize);
+            final List<Tuple2<String, Tuple2<SVInterval, List<ReadInfo>>>> results = splitMoleculesForBarcode(barcode, interval, reads, broadcastGapClusterTree.getValue(), binSize);
 
             return results.iterator();
         });
@@ -237,7 +238,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         }).aggregateByKey(null,
                 (gaps, gap) -> {
                     if (gaps == null) {
-                        List<Integer> gapList = new ArrayList<>();
+                        List<Integer> gapList = new ArrayList<>(1);
                         if (gap >= gapCutoff) {
                             gapList.add(gap);
                         }
