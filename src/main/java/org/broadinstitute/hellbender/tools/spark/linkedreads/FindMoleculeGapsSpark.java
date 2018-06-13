@@ -226,6 +226,9 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         final double pValue = new ChiSquareTest().chiSquareTest(new double[]{expectedLargeGaps, observations - expectedLargeGaps},
                 new long[]{longGapList.size(), observations - longGapList.size()});
 
+        if (pValue < alpha) {
+            System.err.println("Bin " + kv._2()._1() + " passes test: " + observations + " observations; expected " +  expectedLargeGaps + " but saw " + longGapList.size());
+        }
         return pValue < alpha;
     }
 
