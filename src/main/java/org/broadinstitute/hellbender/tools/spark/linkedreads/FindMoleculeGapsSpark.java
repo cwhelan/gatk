@@ -227,7 +227,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
                 new long[]{longGapList.size(), observations - longGapList.size()});
 
         if (pValue < alpha) {
-            System.err.println("Bin " + kv._2()._1() + " passes test: " + observations + " observations; expected " +  expectedLargeGaps + " but saw " + longGapList.size());
+            System.err.println("[SplitPass]\t" + kv._1().getInterval().toString() + "\t" + kv._1().getStrand() + "\t" + observations + "\t" +  expectedLargeGaps + "\t" + longGapList.size() + "\t" + pValue);
         }
         return pValue < alpha;
     }
