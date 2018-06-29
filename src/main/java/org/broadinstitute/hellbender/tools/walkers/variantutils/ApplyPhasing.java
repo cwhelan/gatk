@@ -98,7 +98,7 @@ public class ApplyPhasing extends VariantWalker {
 
         if (discordantGenotypesReport != null) {
             discordantGenotypesReportWriter = new PrintWriter(BucketUtils.createFile(discordantGenotypesReport));
-            discordantGenotypesReportWriter.print("CHROM\tPOS\tQUAL\tHAPLOCALLED\tSAMPLE\tJOINT_GT\tPHASED_GT\n");
+            discordantGenotypesReportWriter.print("CHROM\tPOS\tJOINT_TYPE\tJOINT_QUAL\tPHASED_QUAL\tHAPLOCALLED\tSAMPLE\tJOINT_GT\t\tJOINT_GQ\tJOINT_DP\tPHASED_GT\tPHASED_GQ\tPHASED_DP\n");
         }
 
         concordanceSummary = new ConcordanceSummary();
@@ -180,11 +180,17 @@ public class ApplyPhasing extends VariantWalker {
                     //logger.warn("non-concordant genotype for sample " + sampleName + " at " + phasedVariant.getStart() + ": " + variantGenotype + " vs " + phasedVariantGenotype);
                     discordantGenotypesReportWriter.println(variant.getContig() +
                             "\t" + variant.getStart() +
+                            "\t" + variant.getType() +
                             "\t" + variant.getPhredScaledQual() +
-                            "\t" + variant.getAttributeAsString("HAPLOCALLED", "") +
+                            "\t" + phasedVariant.getPhredScaledQual() +
+                            "\t" + phasedVariant.getAttributeAsString("HAPLOCALLED", "") +
                             "\t" + sampleName +
-                            "\t" + variantGenotype +
-                            "\t" + phasedVariantGenotype);
+                            "\t" + variantGenotype.getGenotypeString(false) +
+                            "\t" + variantGenotype.getGQ() +
+                            "\t" + variantGenotype.getDP() +
+                            "\t" + phasedVariantGenotype.getGenotypeString(false) +
+                            "\t" + phasedVariantGenotype.getGQ() +
+                            "\t" + phasedVariantGenotype.getDP());
                     continue;
                 }
 
