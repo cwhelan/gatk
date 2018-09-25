@@ -128,7 +128,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                         !read.isDuplicate() && !read.failsVendorQualityCheck() && !read.isUnmapped() && ! read.isSecondaryAlignment() && ! read.isSupplementaryAlignment());
 
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getHeaderForReads().getSequenceDictionary());
-        final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
+        final String[] contigNames = ReadMetadata.buildIDToNameArray(contigNameToIdMap);
 
         final StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection params =
                 new StructuralVariationDiscoveryArgumentCollection.FindBreakpointEvidenceSparkArgumentCollection();
