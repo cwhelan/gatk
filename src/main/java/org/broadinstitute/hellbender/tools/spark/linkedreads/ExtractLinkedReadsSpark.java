@@ -1,9 +1,5 @@
 package org.broadinstitute.hellbender.tools.spark.linkedreads;
 
-import com.esotericsoftware.kryo.DefaultSerializer;
-import com.esotericsoftware.kryo.Kryo;
-import com.esotericsoftware.kryo.io.Input;
-import com.esotericsoftware.kryo.io.Output;
 import com.google.common.annotations.VisibleForTesting;
 import htsjdk.samtools.util.BlockCompressedOutputStream;
 import org.apache.spark.api.java.JavaDoubleRDD;
@@ -84,14 +80,9 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
             optional = true)
     public String phaseSetIntervalsFile;
 
-    @Argument(fullName = "min-read-count-per-molecule", shortName = "min-read-count-per-molecule", doc="Minimum number of reads to call a molecule", optional=true)
-    public int minReadCountPerMol = 2;
-
-    @Argument(fullName = "edge-read-mapq-threshold", shortName = "edge-read-mapq-threshold", doc="Mapq below which to trim reads from starts and ends of molecules", optional=true)
-    public int edgeReadMapqThreshold = 30;
-
-    @Argument(fullName = "min-max-mapq", shortName = "min-max-mapq", doc="Minimum highest mapq read to create a fragment", optional=true)
-    public int minMaxMapq = 30;
+    @ArgumentCollection
+    private final LinkedReadFilteringArgumentCollection linkedReadFilteringArgs
+            = new LinkedReadFilteringArgumentCollection();
 
     @Argument(fullName = "filter-high-depth", shortName = "filter-high-depth", doc="Filter out high-depth regions as defined by high-depth-coverage-peak-factor and high-depth-coverage-factor", optional=true)
     public boolean filterHighDepth = false;
@@ -167,7 +158,13 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         final Broadcast<String[]> broadcastContigNames =  ctx.broadcast(contigNames);
 
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals
-            = getBarcodeIntervals(finalClusterSize, mappedReads, broadcastContigNameMap, minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold, broadcastHighDepthIntervals)
+            = getBarcodeIntervals(finalClusterSize,
+                mappedReads,
+                broadcastContigNameMap,
+                linkedReadFilteringArgs.minReadCountPerMol,
+                linkedReadFilteringArgs.minMaxMapq,
+                linkedReadFilteringArgs.edgeReadMapqThreshold,
+                broadcastHighDepthIntervals)
                 .repartition(ctx.defaultParallelism()).cache();
 
         if (barcodeFragmentCountsFile != null) {
@@ -235,7 +232,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     }
 
 
-    private static void writeIntervalsAsBed12(final Broadcast<String[]> contigNames,
+    static void writeIntervalsAsBed12(final Broadcast<String[]> contigNames,
                                               final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> barcodeIntervals,
                                               final boolean shardedOutput,
                                               final String out) {
@@ -246,7 +243,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
 
             final List<Tuple2<SVInterval, String>> results = new ArrayList<>();
             for (final SVIntervalTree.Entry<List<ReadInfo>> next : svIntervalTree) {
-                results.add(new Tuple2<>(next.getInterval(), intervalTreeToBedRecord(barcode, next, contigNames.getValue())));
+                results.add(new Tuple2<>(next.getInterval(), intervalTreeToBedRecord(barcode, contigNames.getValue(), next.getInterval(), next.getValue())));
             }
 
             return results.iterator();
@@ -263,7 +260,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         }
     }
 
-    private static void unshardOutput(final String out, final String shardedOutputDirectory, final int numParts) {
+    static void unshardOutput(final String out, final String shardedOutputDirectory, final int numParts) {
         final OutputStream outputStream;
 
         outputStream = new BlockCompressedOutputStream(new BufferedOutputStream(BucketUtils.createFile(out)), null);
@@ -360,10 +357,14 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
                                                                                            final int edgeReadMapqThreshold, final Broadcast<SVIntervalTree<SVInterval>> broadcastHighDepthIntervals) {
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC = getClusteredReadIntervalsByTag(finalClusterSize, mappedReads, broadcastContigNameMap, "BX", broadcastHighDepthIntervals);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlappersRemovedClusteredReads = overlapperFilter(readsClusteredByBC, finalClusterSize);
+        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> filteredLinkedReads = filterLinkedReads(minReadCountPerMol, minMaxMapq, edgeReadMapqThreshold, overlappersRemovedClusteredReads);
+        return filteredLinkedReads;
+    }
+
+    static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> filterLinkedReads(final int minReadCountPerMol, final int minMaxMapq, final int edgeReadMapqThreshold, final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlappersRemovedClusteredReads) {
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> edgefilteredClusteredReads = edgeFilterFragments(overlappersRemovedClusteredReads, edgeReadMapqThreshold);
         final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFragments = minMoleculeCountFilterFragments(edgefilteredClusteredReads, minReadCountPerMol);
-        final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> maxMapqFilteredFragments = minMaxMapqFilterFragments(minMoleculeCountFragments, minMaxMapq);
-        return maxMapqFilteredFragments;
+        return minMaxMapqFilterFragments(minMoleculeCountFragments, minMaxMapq);
     }
 
     private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> overlapperFilter(final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> readsClusteredByBC,
@@ -418,7 +419,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         return tree;
     }
 
-    private static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFilterFragments(final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> clusteredReads, final int minReadCountPerMol) {
+    static JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> minMoleculeCountFilterFragments(final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> clusteredReads, final int minReadCountPerMol) {
         if (minReadCountPerMol > 0) {
             final JavaPairRDD<String, SVIntervalTree<List<ReadInfo>>> filteredIntervalsByKey = clusteredReads
                     .mapValues(intervalTree -> {
@@ -676,153 +677,37 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
         return currentEnd + clusterSize > newInterval.getStart() - clusterSize;
     }
 
-    static String intervalTreeToBedRecord(final String barcode, final SVIntervalTree.Entry<List<ReadInfo>> node, final String[] contigNames) {
+    static String intervalTreeToBedRecord(final String barcode, final String[] contigNames, final SVInterval interval, final List<ReadInfo> reads) {
         final StringBuilder builder = new StringBuilder();
-        builder.append(contigNames[node.getInterval().getContig()]);
+        builder.append(contigNames[interval.getContig()]);
         builder.append("\t");
-        builder.append(node.getInterval().getStart());
+        builder.append(interval.getStart());
         builder.append("\t");
-        builder.append(node.getInterval().getEnd());
+        builder.append(interval.getEnd());
         builder.append("\t");
         builder.append(barcode);
         builder.append("\t");
-        builder.append(node.getValue() == null ? "." : node.getValue().size());
+        builder.append(reads == null ? "." : reads.size());
         builder.append("\t");
         builder.append("+");
         builder.append("\t");
-        builder.append(node.getInterval().getStart());
+        builder.append(interval.getStart());
         builder.append("\t");
-        builder.append(node.getInterval().getEnd());
+        builder.append(interval.getEnd());
         builder.append("\t");
         builder.append("0,0,255");
         builder.append("\t");
-        builder.append(node.getValue() == null ? "." : node.getValue().size());
-        final List<ReadInfo> reads;
-        if (node.getValue() != null) {
-            reads = node.getValue();
-            reads.sort(Comparator.comparingInt(ReadInfo::getStart));
-        } else {
-            reads = null;
-        }
+        builder.append(reads == null ? "." : reads.size());
+        reads.sort(Comparator.comparingInt(ReadInfo::getStart));
         builder.append("\t");
         builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getEnd() - r.getStart() + 1)).collect(Collectors.joining(",")));
         builder.append("\t");
-        builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getStart() - node.getInterval().getStart())).collect(Collectors.joining(",")));
+        builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getStart() - interval.getStart())).collect(Collectors.joining(",")));
         builder.append("\t");
         builder.append(reads == null ? "." : reads.stream().mapToInt(ReadInfo::getMapq).max().orElse(-1));
+        builder.append("\t");
+        builder.append(reads == null ? "." : reads.stream().map(r -> String.valueOf(r.getMapq())).collect(Collectors.joining(",")));
         return builder.toString();
-    }
-
-
-    /**
-     * A lightweight object to summarize reads for the purposes of collecting linked read information
-     */
-    @DefaultSerializer(ReadInfo.Serializer.class)
-    static class ReadInfo {
-        ReadInfo(final Map<String, Integer> contigNameMap, final GATKRead gatkRead) {
-            this.contig = contigNameMap.get(gatkRead.getContig());
-            this.start = gatkRead.getStart();
-            this.end = gatkRead.getEnd();
-            this.forward = !gatkRead.isReverseStrand();
-            this.mapq = gatkRead.getMappingQuality();
-        }
-
-        ReadInfo(final int contig, final int start, final int end, final boolean forward, final int mapq) {
-            this.contig = contig;
-            this.start = start;
-            this.end = end;
-            this.forward = forward;
-            this.mapq = mapq;
-        }
-
-        int contig;
-        int start;
-        int end;
-        boolean forward;
-        int mapq;
-
-        public ReadInfo(final Kryo kryo, final Input input) {
-            contig = input.readInt();
-            start = input.readInt();
-            end = input.readInt();
-            forward = input.readBoolean();
-            mapq = input.readInt();
-        }
-
-        public int getContig() {
-            return contig;
-        }
-
-        public int getStart() {
-            return start;
-        }
-
-        public int getEnd() {
-            return end;
-        }
-
-        public boolean isForward() {
-            return forward;
-        }
-
-        public int getMapq() {
-            return mapq;
-        }
-
-        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadInfo> {
-            @Override
-            public void write( final Kryo kryo, final Output output, final ReadInfo interval ) {
-                interval.serialize(kryo, output);
-            }
-
-            @Override
-            public ReadInfo read(final Kryo kryo, final Input input, final Class<ReadInfo> klass ) {
-                return new ReadInfo(kryo, input);
-            }
-        }
-
-        private void serialize(final Kryo kryo, final Output output) {
-            output.writeInt(contig);
-            output.writeInt(start);
-            output.writeInt(end);
-            output.writeBoolean(forward);
-            output.writeInt(mapq);
-        }
-
-        @Override
-        public String toString() {
-            return "ReadInfo{" +
-                    "contig=" + contig +
-                    ", start=" + start +
-                    ", end=" + end +
-                    ", forward=" + forward +
-                    ", mapq=" + mapq +
-                    '}';
-        }
-
-        @Override
-        public boolean equals(final Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-
-            final ReadInfo readInfo = (ReadInfo) o;
-
-            if (contig != readInfo.contig) return false;
-            if (start != readInfo.start) return false;
-            if (end != readInfo.end) return false;
-            if (forward != readInfo.forward) return false;
-            return mapq == readInfo.mapq;
-        }
-
-        @Override
-        public int hashCode() {
-            int result = contig;
-            result = 31 * result + start;
-            result = 31 * result + end;
-            result = 31 * result + (forward ? 1 : 0);
-            result = 31 * result + mapq;
-            return result;
-        }
     }
 
 
