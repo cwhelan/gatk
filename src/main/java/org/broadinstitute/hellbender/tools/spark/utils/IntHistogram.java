@@ -117,6 +117,21 @@ public final class IntHistogram {
 
     public CDF getCDF() { return new CDF(this); }
 
+    public String textRep() {
+        StringBuffer buffer = new StringBuffer();
+        for (int i = 0; i < counts.length ; i++) {
+            if (i % 200 == 0) {
+                buffer.append("\n");
+                buffer.append(i);
+                buffer.append("\t");
+            }
+            for (int j = 0; j < counts[i] ; j++) {
+                buffer.append("X");
+            }
+        }
+        return buffer.toString();
+    }
+
     public final static class Serializer extends com.esotericsoftware.kryo.Serializer<IntHistogram> {
         @Override
         public void write( final Kryo kryo, final Output output, final IntHistogram histogram ) {
@@ -318,6 +333,43 @@ public final class IntHistogram {
                 idx += 1;
             }
             return false;
+        }
+
+        public double getKSStatistic(final IntHistogram sampleHistogram) {
+            final long[] sampleCounts = sampleHistogram.counts;
+
+            Utils.validateArg(sampleCounts.length == cdfFractions.length,
+                    "The supplied histogram doesn't have the right size.");
+
+            final long mCounts = sampleHistogram.getTotalObservations();
+            Utils.validateArg(mCounts > 0, "The supplied histogram is empty.");
+
+            long sum = 0L; // sum from 0 to idx of sample histogram counts
+            int idx = 0; // current index into sample histogram
+            float curVal = 0.f; // sum/mCounts as a float (between 0 and 1)
+            boolean prevZero = false; // whether the value at the previous index was 0 or not
+            final long trackedTotal = mCounts - sampleCounts[sampleCounts.length - 1];
+
+            double supremum = 0;
+            while ( sum < trackedTotal ) { // i.e., until we've processed all non-zero counts in the sample histogram
+                final long val = sampleCounts[idx];
+                if ( val == 0 ) prevZero = true;
+                else {
+                    // an extremum can occur at the end of a run of zero counts
+                    if ( prevZero && Math.abs(cdfFractions[idx - 1] - curVal) >= supremum ) {
+                        supremum = Math.abs(cdfFractions[idx - 1] - curVal);
+                    }
+                    prevZero = false;
+                    sum += val;
+                    curVal = (float)sum / mCounts;
+                    // an extremum can occur at any non-zero count
+                    if ( Math.abs(cdfFractions[idx] - curVal) >= supremum ) {
+                        supremum = Math.abs(cdfFractions[idx] - curVal);
+                    }
+                }
+                idx += 1;
+            }
+            return supremum;
         }
 
         public int median() { return internalPopStat(.5f); }
