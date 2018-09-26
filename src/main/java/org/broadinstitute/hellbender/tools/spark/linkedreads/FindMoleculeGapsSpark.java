@@ -77,7 +77,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
         final double alpha = 0.05 / (nBins * 2);
 
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getReferenceSequenceDictionary());
-        final String[] contigNames = ReadMetadata.buildContigIDToNameArray(contigNameToIdMap);
+        final String[] contigNames = ReadMetadata.buildIDToNameArray(contigNameToIdMap);
 
         final SVIntervalTree<Integer> regionsToIgnore = loadHighDepthIntervals(contigNameToIdMap, highDepthRegionsFile);
 
