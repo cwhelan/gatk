@@ -21,6 +21,7 @@ import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.*;
 import org.broadinstitute.hellbender.tools.spark.utils.IntHistogram;
+import org.broadinstitute.hellbender.utils.SimpleInterval;
 import org.broadinstitute.hellbender.utils.Utils;
 import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
 import scala.Tuple2;
@@ -28,7 +29,6 @@ import scala.Tuple2;
 import java.io.*;
 import java.util.*;
 import java.util.stream.Collectors;
-
 
 @CommandLineProgramProperties(
         summary = "Finds linked read evidence links",
@@ -68,7 +68,6 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
         logger.info("Loading linked reads");
 
-         getIntervals();
         final Map<String, Integer> contigNameToIdMap = ReadMetadata.buildContigNameToIDMap(getReferenceSequenceDictionary());
         final String[] contigNames = ReadMetadata.buildIDToNameArray(contigNameToIdMap);
 
@@ -78,7 +77,21 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
 
         final Broadcast<Map<String, Integer>> broadcastContigNameMap = ctx.broadcast(contigNameToIdMap);
 
-        final IntHistogram fullIntHistogram = getGapSizeHistogram(ctx, broadcastBarcodeIdMap, broadcastContigNameMap, inputLinkedReads);
+        final List<SimpleInterval> intervals = getIntervals() != null ? getIntervals() : new ArrayList<>();
+        final SVIntervalTree<SVInterval> svintervalsToProcess = new SVIntervalTree<>();
+        intervals.forEach(i -> {
+                    final SVInterval svi = new SVInterval(contigNameToIdMap.get(i.getContig()), i.getStart(), i.getEnd());
+                    svintervalsToProcess.put(svi, svi);
+                });
+
+        final Broadcast<SVIntervalTree<SVInterval>> broadcastIntervalsToProcess = ctx.broadcast(svintervalsToProcess);
+
+        final IntHistogram fullIntHistogram = getGapSizeHistogram(
+                ctx,
+                broadcastBarcodeIdMap,
+                broadcastContigNameMap,
+                broadcastIntervalsToProcess,
+                inputLinkedReads);
 
         final int median = fullIntHistogram.getCDF().median();
         logger.info("Median gap size: " + median);
@@ -94,7 +107,7 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
         logger.info("Expected GAP length: " + expectedGapLength);
 
         final JavaPairRDD<Integer, SVInterval> barcodeIntervalsWithoutReads =
-                parseBarcodeIntervalsWithoutReads(ctx, broadcastContigNameMap, broadcastBarcodeIdMap, inputLinkedReads).cache();
+                parseBarcodeIntervalsWithoutReads(ctx, broadcastContigNameMap, broadcastBarcodeIdMap, broadcastIntervalsToProcess, inputLinkedReads).cache();
 
         final Map<Integer, SVIntervalTree<Boolean>> barcodeEndTrees = getIntervalEndsTrees(expectedGapLength, barcodeIntervalsWithoutReads);
 
@@ -277,9 +290,9 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
     private IntHistogram getGapSizeHistogram(final JavaSparkContext ctx,
                                              final Broadcast<Map<String, Integer>> broadcastBarcodeIdMap,
                                              final Broadcast<Map<String, Integer>> broadcastContigNameMap,
-                                             final File inputLinkedReads) {
+                                             final Broadcast<SVIntervalTree<SVInterval>> broadcastIntervalsToProcess, final File inputLinkedReads) {
         final JavaPairRDD<Integer, Tuple2<SVInterval, List<ReadInfo>>> barcodeIntervalsWithReads;
-        barcodeIntervalsWithReads = parseBarcodeIntervals(ctx, broadcastContigNameMap, broadcastBarcodeIdMap, inputLinkedReads);
+        barcodeIntervalsWithReads = parseBarcodeIntervals(ctx, broadcastContigNameMap, broadcastBarcodeIdMap, broadcastIntervalsToProcess, inputLinkedReads);
         logger.info("Done loading linked reads");
 
         return getGapSizeHistogram(barcodeIntervalsWithReads);
@@ -482,9 +495,11 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 }
                 if (!linkThatAgreesWithNewLink._1().overlaps(newLink)) {
                     allClusterLinksAgreeWithNewLink = false;
+                } else {
+                    intersection.add(linkThatAgreesWithNewLink);
+                    intersectionCount++;
+
                 }
-                intersection.add(linkThatAgreesWithNewLink);
-                intersectionCount++;
             }
 
             if (allClusterLinksAgreeWithNewLink) {
@@ -515,7 +530,13 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                 final Iterator<Tuple2<PairedStrandedIntervals, Integer>> intersectionIterator = intersection.iterator();
                 while (intersectionIterator.hasNext()) {
                     final Tuple2<PairedStrandedIntervals, Integer> next = intersectionIterator.next();
-                    leftInterval = leftInterval.intersect(next._1().getLeft().getInterval());
+                    final SVInterval intersectionWithLeftInterval = leftInterval.intersect(next._1().getLeft().getInterval());
+                    if (intersectionWithLeftInterval == null) {
+                        System.err.println("new link: " + newLink);
+                        intersection.forEach(e -> System.err.println("intersection: " + e._1()));
+                    }
+                    Utils.validate(intersectionWithLeftInterval != null, "Intersection of " + leftInterval.toString() + " with " +  next._1().getLeft().getInterval() + " is null");
+                    leftInterval = intersectionWithLeftInterval;
                     rightInterval = rightInterval.intersect(next._1().getRight().getInterval());
                     barcodes.add(next._2());
                 }
@@ -865,21 +886,25 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
     private JavaPairRDD<Integer, Tuple2<SVInterval, List<ReadInfo>>> parseBarcodeIntervals(final JavaSparkContext ctx,
                                                                                            final Broadcast<Map<String, Integer>> broadcastContigNameMap,
                                                                                            final Broadcast<Map<String, Integer>> broadcastBarcodeIdMap,
+                                                                                           final Broadcast<SVIntervalTree<SVInterval>> broadcastIntervalsToProcess,
                                                                                            final File inputLinkedReads) {
         final JavaRDD<String> stringJavaRDD = ctx.textFile(inputLinkedReads.getAbsolutePath());
         logger.info("loaded text file into " + stringJavaRDD.getNumPartitions() + " partitions");
         JavaRDD<String> repartitionedFileData = stringJavaRDD.repartition(ctx.defaultParallelism());
         final JavaPairRDD<Integer, Tuple2<SVInterval, List<ReadInfo>>> moleculeIntervals =
                 repartitionedFileData.mapToPair(line -> parseBarcodeIntervalLine(line, broadcastContigNameMap.getValue(), broadcastBarcodeIdMap.getValue()));
+        final SVIntervalTree<SVInterval> intervalsToProcessValue = broadcastIntervalsToProcess.getValue();
+        final JavaPairRDD<Integer, Tuple2<SVInterval, List<ReadInfo>>> moleculeIntervalsFiltered = intervalsToProcessValue.size() == 0 ? moleculeIntervals :
+                moleculeIntervals.filter(i -> intervalsToProcessValue.hasOverlapper(i._2()._1()));
         logger.info("molecule intervals are in " + repartitionedFileData.getNumPartitions() + " partitions");
-        return moleculeIntervals;
+        return moleculeIntervalsFiltered;
 
     }
 
     private JavaPairRDD<Integer, SVInterval> parseBarcodeIntervalsWithoutReads(final JavaSparkContext ctx,
-                                                                                           final Broadcast<Map<String, Integer>> broadcastContigNameMap,
-                                                                                           final Broadcast<Map<String, Integer>> broadcastBarcodeIdMap,
-                                                                                           final File inputLinkedReads) {
+                                                                               final Broadcast<Map<String, Integer>> broadcastContigNameMap,
+                                                                               final Broadcast<Map<String, Integer>> broadcastBarcodeIdMap,
+                                                                               final Broadcast<SVIntervalTree<SVInterval>> broadcastIntervalsToProcess, final File inputLinkedReads) {
         final JavaRDD<String> stringJavaRDD = ctx.textFile(inputLinkedReads.getAbsolutePath());
         logger.info("loaded text file into " + stringJavaRDD.getNumPartitions() + " partitions");
         JavaRDD<String> repartitionedFileData = stringJavaRDD.repartition(ctx.defaultParallelism());
@@ -888,8 +913,12 @@ public class FindLinkedReadEvidenceLinks extends GATKSparkTool {
                     final Tuple2<Integer, Tuple2<SVInterval, List<ReadInfo>>> barcodeIntervalLine = parseBarcodeIntervalLine(line, broadcastContigNameMap.getValue(), broadcastBarcodeIdMap.getValue());
                     return new Tuple2<>(barcodeIntervalLine._1(), barcodeIntervalLine._2()._1());
                 });
+        final SVIntervalTree<SVInterval> intervalsToProcessValue = broadcastIntervalsToProcess.getValue();
+        final JavaPairRDD<Integer, SVInterval> moleculeIntervalsFiltered = intervalsToProcessValue.size() == 0 ? moleculeIntervals :
+                moleculeIntervals.filter(i -> intervalsToProcessValue.hasOverlapper(i._2()));
+
         logger.info("molecule intervals are in " + repartitionedFileData.getNumPartitions() + " partitions");
-        return moleculeIntervals;
+        return moleculeIntervalsFiltered;
 
     }
 

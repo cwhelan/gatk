@@ -137,7 +137,7 @@ public class ExtractLinkedReadsSparkUnitTest extends GATKBaseTest {
         final String barcode = "ACTGACTG";
 
         final String bedRecord = ExtractLinkedReadsSpark.intervalTreeToBedRecord(barcode, contigNames, tree.iterator().next().getInterval(),  tree.iterator().next().getValue());
-        Assert.assertEquals(bedRecord, "1\t1000\t1159\tACTGACTG\t5\t+\t1000\t1159\t0,0,255\t5\t10,11,10,9,10\t0,20,25,45,150\t60");
+        Assert.assertEquals(bedRecord, "1\t1000\t1159\tACTGACTG\t5\t+\t1000\t1159\t0,0,255\t5\t10,11,10,9,10\t0,20,25,45,150\t60\t60,60,60,60,60");
 
     }
 
