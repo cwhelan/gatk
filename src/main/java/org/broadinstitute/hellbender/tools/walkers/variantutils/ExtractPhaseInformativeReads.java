@@ -116,9 +116,6 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
                     if (phaseSetInfo.getNumSites() == 1 || phaseSetInfo.getMinPQ() > pq) {
                         phaseSetInfo.setMinPQ(pq);
                     }
-                    if (phaseSetInfo.getNumSites() == 1 || phaseSetInfo.getMaxPQ() < pq) {
-                        phaseSetInfo.setMaxPQ(pq);
-                    }
                     phaseSetInfo.setTotalPQ(phaseSetInfo.getTotalPQ() + pq);
 
                     phaseSetInfo.addPhasedGT(variant, genotype);
@@ -148,10 +145,10 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
 
     @Override
     public Object onTraversalSuccess() {
-        outputMapWriter.print("MAP\t" + variantMap.size());
+        outputMapWriter.println("MAP\t" + variantMap.size());
         for (Integer position : variantMap.keySet()) {
             final List<Allele> alleles = variantMap.get(position);
-            outputMapWriter.print(position + "\t" + alleles.get(0).getDisplayString() + alleles.get(1).getDisplayString());
+            outputMapWriter.println(position + "\t" + alleles.get(0).getDisplayString() + "\t" + alleles.get(1).getDisplayString());
         }
         outputMapWriter.close();
 
@@ -240,13 +237,18 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
         public String toPIRStrings(final Map<Integer, List<Allele>> variantMap) {
             final StringBuffer outString1 = new StringBuffer();
             final StringBuffer outString2 = new StringBuffer();
+            boolean first = false;
             phasedGts.forEach((k,v) -> {
                 final List<Allele> alleles = variantMap.get(k);
+                if (! first) {
+                    outString1.append("\t");
+                    outString2.append("\t");
+                }
                 outString1.append(k + "\t" + alleles.get(v._1() ? 0 : 1).getDisplayString() + "\t" + v._2());
                 outString2.append(k + "\t" + alleles.get(v._1() ? 1 : 0).getDisplayString() + "\t" + v._2());
 
             });
-            return outString1 + "\n" + outString2;
+            return outString1 + "\n" + outString2 + "\n";
         }
     }
 }
