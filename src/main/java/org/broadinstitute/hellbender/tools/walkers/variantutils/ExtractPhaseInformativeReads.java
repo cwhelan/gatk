@@ -238,16 +238,19 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
             final StringBuffer outString1 = new StringBuffer();
             final StringBuffer outString2 = new StringBuffer();
             boolean first = false;
-            phasedGts.forEach((k,v) -> {
+            for (Map.Entry<Integer, Tuple2<Boolean, Integer>> entry : phasedGts.entrySet()) {
+                Integer k = entry.getKey();
+                Tuple2<Boolean, Integer> v = entry.getValue();
                 final List<Allele> alleles = variantMap.get(k);
-                if (! first) {
+                if (!first) {
                     outString1.append("\t");
                     outString2.append("\t");
+                    first = true;
                 }
                 outString1.append(k + "\t" + alleles.get(v._1() ? 0 : 1).getDisplayString() + "\t" + v._2());
                 outString2.append(k + "\t" + alleles.get(v._1() ? 1 : 0).getDisplayString() + "\t" + v._2());
 
-            });
+            }
             return outString1 + "\n" + outString2 + "\n";
         }
     }
