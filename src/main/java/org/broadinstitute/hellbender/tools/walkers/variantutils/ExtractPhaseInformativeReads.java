@@ -237,7 +237,7 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
         public String toPIRStrings(final Map<Integer, List<Allele>> variantMap) {
             final StringBuffer outString1 = new StringBuffer();
             final StringBuffer outString2 = new StringBuffer();
-            boolean first = false;
+            boolean first = true;
             for (Map.Entry<Integer, Tuple2<Boolean, Integer>> entry : phasedGts.entrySet()) {
                 Integer k = entry.getKey();
                 Tuple2<Boolean, Integer> v = entry.getValue();
@@ -245,8 +245,8 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
                 if (!first) {
                     outString1.append("\t");
                     outString2.append("\t");
-                    first = true;
                 }
+                first = false;
                 outString1.append(k + "\t" + alleles.get(v._1() ? 0 : 1).getDisplayString() + "\t" + v._2());
                 outString2.append(k + "\t" + alleles.get(v._1() ? 1 : 0).getDisplayString() + "\t" + v._2());
 
