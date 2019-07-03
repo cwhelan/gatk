@@ -44,7 +44,8 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
     private Set<String> vcfSamples;
     private PrintWriter outputMapWriter;
     private Map<String, PrintWriter> samplePrintWriters;
-    private SortedMap<Integer, List<Allele>> variantMap;
+    private SortedMap<Integer, Tuple2<Integer, List<Allele>>> variantMap;
+    private int index;
 
     @Override
     public boolean requiresIntervals() {
@@ -65,6 +66,8 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
         variantMap = new TreeMap<>();
 
         samplePrintWriters = vcfSamples.stream().collect(Collectors.toMap(s -> s, s -> new PrintWriter(BucketUtils.createFile(outputFile + "." + s))));
+
+        index = -1;
 
         final long contigCount = intervalArgumentCollection.getIntervals(getSequenceDictionaryForDrivingVariants()).stream().map(SimpleInterval::getContig).count();
         if (contigCount > 1) {
@@ -90,7 +93,7 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
                     continue;
                 }
 
-                initializeVariant(variant, variantMap);
+                index = initializeVariant(variant, variantMap, index);
 
                 if (genotype.isPhased()) {
                     final PhaseSetInfo currentSamplePhaseSet = phaseSets.get(sample);
@@ -118,14 +121,16 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
                     }
                     phaseSetInfo.setTotalPQ(phaseSetInfo.getTotalPQ() + pq);
 
-                    phaseSetInfo.addPhasedGT(variant, genotype);
+                    phaseSetInfo.addPhasedGT(variant, genotype, index);
                 }
             }
         }
     }
 
-    private void initializeVariant(final VariantContext variant, final SortedMap<Integer, List<Allele>> variantMap) {
-        variantMap.put(variant.getStart(), variant.getAlleles());
+    private int initializeVariant(final VariantContext variant, final SortedMap<Integer, Tuple2<Integer, List<Allele>>> variantMap, final int prevIndex) {
+        final int newIndex = prevIndex + 1;
+        variantMap.put(newIndex, new Tuple2<>(variant.getStart(), variant.getAlleles()));
+        return newIndex;
     }
 
     private int getPhaseSetId(final Genotype genotype) {
@@ -146,9 +151,11 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
     @Override
     public Object onTraversalSuccess() {
         outputMapWriter.println("MAP\t" + variantMap.size());
-        for (Integer position : variantMap.keySet()) {
-            final List<Allele> alleles = variantMap.get(position);
-            outputMapWriter.println(position + "\t" + alleles.get(0).getDisplayString() + "\t" + alleles.get(1).getDisplayString());
+        for (Integer index : variantMap.keySet()) {
+            final Tuple2<Integer, List<Allele>> vcInfo = variantMap.get(index);
+            final Integer pos = vcInfo._1();
+            final List<Allele> alleles = vcInfo._2();
+            outputMapWriter.println(pos + "\t" + alleles.get(0).getDisplayString() + "\t" + alleles.get(1).getDisplayString());
         }
         outputMapWriter.close();
 
@@ -225,23 +232,25 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
             return lastObservedLocation;
         }
 
-        public void addPhasedGT(final VariantContext vc, final Genotype genotype) {
+        public void addPhasedGT(final VariantContext vc, final Genotype genotype, final int idx) {
             final Tuple2<Boolean, Integer> value = new Tuple2<>(vc.getAlleleIndex(genotype.getAllele(0)) == 0, 20);
-            phasedGts.put(vc.getStart(), value);
+            phasedGts.put(idx, value);
         }
 
         public void setLastObservedLocation(final int lastObservedLocation) {
             this.lastObservedLocation = lastObservedLocation;
         }
 
-        public String toPIRStrings(final Map<Integer, List<Allele>> variantMap) {
+        public String toPIRStrings(final SortedMap<Integer, Tuple2<Integer, List<Allele>>> variantMap) {
             final StringBuffer outString1 = new StringBuffer();
             final StringBuffer outString2 = new StringBuffer();
             boolean first = true;
+            int i = 0;
             for (Map.Entry<Integer, Tuple2<Boolean, Integer>> entry : phasedGts.entrySet()) {
                 Integer k = entry.getKey();
                 Tuple2<Boolean, Integer> v = entry.getValue();
-                final List<Allele> alleles = variantMap.get(k);
+                final Tuple2<Integer, List<Allele>> vcInfo = variantMap.get(k);
+                final List<Allele> alleles = vcInfo._2();
                 if (!first) {
                     outString1.append("\t");
                     outString2.append("\t");
