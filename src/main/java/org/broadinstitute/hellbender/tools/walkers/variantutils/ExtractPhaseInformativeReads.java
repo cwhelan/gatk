@@ -233,7 +233,7 @@ public class ExtractPhaseInformativeReads extends VariantWalker {
         }
 
         public void addPhasedGT(final VariantContext vc, final Genotype genotype, final int idx) {
-            final Tuple2<Boolean, Integer> value = new Tuple2<>(vc.getAlleleIndex(genotype.getAllele(0)) == 0, 20);
+            final Tuple2<Boolean, Integer> value = new Tuple2<>(vc.getAlleleIndex(genotype.getAllele(0)) == 0, Integer.parseInt(genotype.getAnyAttribute("PQ").toString()));
             phasedGts.put(idx, value);
         }
 
