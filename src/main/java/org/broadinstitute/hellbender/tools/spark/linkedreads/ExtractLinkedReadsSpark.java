@@ -24,7 +24,6 @@ import org.broadinstitute.hellbender.tools.spark.sv.utils.SVIntervalTree;
 import org.broadinstitute.hellbender.utils.Utils;
 import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
 import org.broadinstitute.hellbender.utils.read.GATKRead;
-import org.seqdoop.hadoop_bam.util.NIOFileUtil;
 import scala.Tuple2;
 
 import java.io.*;
@@ -263,11 +262,11 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
     static void unshardOutput(final String out, final String shardedOutputDirectory, final int numParts) {
         final OutputStream outputStream;
 
-        outputStream = new BlockCompressedOutputStream(new BufferedOutputStream(BucketUtils.createFile(out)), null);
+        outputStream = new BlockCompressedOutputStream(new BufferedOutputStream(BucketUtils.createFile(out)), (File)null);
         for (int i = 0; i < numParts; i++) {
             String fileName = String.format("part-%1$05d", i);
             try {
-                Path path = NIOFileUtil.asPath(shardedOutputDirectory + System.getProperty("file.separator") + fileName);
+                Path path = BucketUtils.getPathOnGcs(shardedOutputDirectory + System.getProperty("file.separator") + fileName);
                 if (Files.exists(path)) {
                     final BufferedInputStream bufferedInputStream = new BufferedInputStream(Files.newInputStream(path));
                     int bite;
@@ -287,7 +286,7 @@ public class ExtractLinkedReadsSpark extends GATKSparkTool {
             throw new GATKException(e.getMessage());
         }
         try {
-            deleteRecursive(NIOFileUtil.asPath(shardedOutputDirectory));
+            deleteRecursive(BucketUtils.getPathOnGcs(shardedOutputDirectory));
         } catch (IOException e) {
             throw new GATKException(e.getMessage());
         }

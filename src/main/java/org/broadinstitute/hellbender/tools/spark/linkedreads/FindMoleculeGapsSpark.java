@@ -15,8 +15,8 @@ import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.LinkedReadsProgramGroup;
 import org.broadinstitute.hellbender.engine.FeatureDataSource;
-import org.broadinstitute.hellbender.engine.datasources.ReferenceMultiSource;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
+import org.broadinstitute.hellbender.engine.spark.datasources.ReferenceMultiSparkSource;
 import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.tools.spark.sv.evidence.ReadMetadata;
 import org.broadinstitute.hellbender.tools.spark.sv.utils.*;
@@ -71,7 +71,7 @@ public class FindMoleculeGapsSpark extends GATKSparkTool {
     protected void runTool(final JavaSparkContext ctx) {
 
         logger.info("Loading linked reads");
-        final ReferenceMultiSource reference = getReference();
+        final ReferenceMultiSparkSource reference = getReference();
 
         final long nBins = reference.getReferenceSequenceDictionary(getBestAvailableSequenceDictionary()).getReferenceLength() / binSize;
         final double alpha = 0.05 / (nBins * 2);
